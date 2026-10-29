@@ -54,6 +54,10 @@ jobs:
           MAC_CERTS: ${{ secrets.MAC_CERTS }}
           MAC_CERTS_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
         run: |
+          if [ -z "$MAC_CERTS" ] || [ -z "$MAC_CERTS_PASSWORD" ]; then
+            echo "未配置 macOS 签名证书，跳过签名准备"
+            exit 0
+          fi
           # 创建临时 keychain
           KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
@@ -135,6 +139,10 @@ jobs:
           MAC_CERTS: ${{ secrets.MAC_CERTS }}
           MAC_CERTS_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
         run: |
+          if [ -z "$MAC_CERTS" ] || [ -z "$MAC_CERTS_PASSWORD" ]; then
+            echo "未配置 macOS 签名证书，跳过签名准备"
+            exit 0
+          fi
           # 创建临时 keychain
           KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
           KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
