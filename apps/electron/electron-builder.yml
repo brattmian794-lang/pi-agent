@@ -204,9 +204,9 @@ deb:
 
 # ============================================
 # 发布配置
-# 每个平台的 build job 通过 --publish always 直接上传到 GitHub Release。
+# 每个平台构建任务将产物发布到当前 Fork 的 GitHub Release。
 # ============================================
 publish:
   provider: github
-  owner: proma-ai
-  repo: Proma
+  owner: brattmian794-lang
+  repo: pi-agent
