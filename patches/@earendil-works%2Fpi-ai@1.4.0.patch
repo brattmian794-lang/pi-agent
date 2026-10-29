@@ -1,0 +1,26 @@
+diff --git a/dist/utils/retry.js b/dist/utils/retry.js
+index 1ae291c296dc5d35a7b827e1098977e0d0db32cf..5cebf7a40b0dfef16d462375e154066456a176e1 100644
+--- a/dist/utils/retry.js
++++ b/dist/utils/retry.js
+@@ -48,6 +48,8 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
+     "unable to forward upstream",
+     // Other gateway upstream failures relayed as `response.failed` error codes (#10920).
+     "upstream.?request.?failed",
++    // 将 Pi 的流读取错误码作为可重试的瞬时中断处理。
++    "\\bstream_read_error\\b",
+     "upstream_stream_read_error",
+     "stream was interrupted",
+     "http/?2 stream failed",
+@@ -81,7 +83,11 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
+     // (#4433); Bedrock/Smithy can throw an HTTP/2 no-response error (#3594).
+     "ended without",
+     "stream ended before message_stop",
+-    "stream ended before a terminal response event",
++    "stream ended before (?:a )?terminal(?: response)? event",
++    "unexpected non-whitespace character after JSON",
++    "peer closed connection",
++    "incomplete chunked read",
++    "failed to fetch",
+     "http2 request did not get a response",
+     // Codex CLI mid-stream disconnect, relayed by proxies that wrap the Codex CLI,
+     // e.g. "stream disconnected before completion: stream closed before response.completed" (#11057).

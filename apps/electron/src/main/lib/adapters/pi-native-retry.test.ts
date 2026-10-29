@@ -22,6 +22,9 @@ describe('Pi native retry classifier', () => {
       failedAssistant('Error Code undefined: Upstream Responses stream ended before a terminal event'),
     )).toBe(true)
   })
+  test('Pi 流读取错误应触发重试', () => {
+    expect(isRetryableAssistantError(failedAssistant('stream_read_error'))).toBe(true)
+  })
 
   test('classifies a corrupted upstream JSON response as retryable', () => {
     expect(isRetryableAssistantError(
