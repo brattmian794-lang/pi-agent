@@ -216,9 +216,9 @@ function AutomationPromptEmptyGuide(): React.ReactElement {
     <div className="rounded-xl bg-foreground/[0.035] p-4 shadow-inner">
       <div className="flex flex-col gap-3">
         <div>
-          <div className="text-[13px] font-semibold text-foreground">推荐：让 Proma Agent 创建</div>
+          <div className="text-[13px] font-semibold text-foreground">推荐：让 pi-agent Agent 创建</div>
           <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            在左侧会话里说清目标，并明确表示要求创建定时任务，Proma Agent 会生成任务描述，并补全周期、项目和模型等配置，手动编辑更适合微调任务描述。
+            在左侧会话里说清目标，并明确表示要求创建定时任务，pi-agent Agent 会生成任务描述，并补全周期、项目和模型等配置，手动编辑更适合微调任务描述。
           </div>
         </div>
         <div className="h-px bg-border/50" />

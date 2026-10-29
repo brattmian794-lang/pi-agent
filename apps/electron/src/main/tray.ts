@@ -113,12 +113,12 @@ function buildTrayMenu(actions: TrayActions): Menu {
     },
     { type: 'separator' },
     {
-      label: '打开 Proma',
+      label: '打开 pi-agent',
       click: () => actions.showMainWindow(),
     },
     { type: 'separator' },
     {
-      label: '退出 Proma',
+      label: '退出 pi-agent',
       click: () => {
         app.quit()
       },
@@ -157,7 +157,7 @@ export function createTray(actionsInput?: Partial<TrayActions>): Tray | null {
 
     tray = new Tray(image)
 
-    tray.setToolTip(process.platform === 'win32' ? '' : 'Proma')
+    tray.setToolTip(process.platform === 'win32' ? '' : 'pi-agent')
 
     updateTrayMenu(actions)
 

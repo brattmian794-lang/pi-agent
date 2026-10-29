@@ -1308,8 +1308,8 @@ export function VaultView({ embedded = false, sessionId }: { embedded?: boolean;
       <Dialog open={vaultHelpOpen} onOpenChange={setVaultHelpOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>在 Proma 中使用 {VAULT_NAME}</DialogTitle>
-            <DialogDescription>Proma 直接读写本机已授权的 Markdown Vault；这些笔记也会继续保留在 {VAULT_NAME} 中。</DialogDescription>
+            <DialogTitle>在 pi-agent 中使用 {VAULT_NAME}</DialogTitle>
+            <DialogDescription>pi-agent 直接读写本机已授权的 Markdown Vault；这些笔记也会继续保留在 {VAULT_NAME} 中。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm leading-6 text-muted-foreground">
             <section>

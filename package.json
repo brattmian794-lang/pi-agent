@@ -1,7 +1,7 @@
 {
   "name": "proma",
-  "version": "0.1.6",
-  "description": "Proma，为专业用户设计的 Agent",
+  "version": "0.1.7",
+  "description": "pi-agent，本地优先的开源 AI 桌面 Agent",
   "type": "module",
   "private": true,
   "workspaces": [

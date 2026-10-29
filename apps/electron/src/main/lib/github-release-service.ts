@@ -12,10 +12,10 @@ import type {
 /** GitHub API 基础 URL */
 const GITHUB_API_BASE = 'https://api.github.com'
 
-/** GitHub 仓库配置（从 electron-builder.yml） */
+/** GitHub 仓库配置：当前 fork 的独立发布仓库 */
 const GITHUB_REPO = {
-  owner: 'ErlichLiu',
-  repo: 'Proma',
+  owner: 'brattmian794-lang',
+  repo: 'pi-agent',
 }
 
 /** Release 缓存 */
@@ -54,7 +54,7 @@ async function fetchFromGitHub<T>(endpoint: string): Promise<T> {
   const response = await fetch(url, {
     headers: {
       'Accept': 'application/vnd.github+json',
-      'User-Agent': 'Proma-Desktop-App',
+      'User-Agent': 'pi-agent-Desktop-App',
     },
   })
 

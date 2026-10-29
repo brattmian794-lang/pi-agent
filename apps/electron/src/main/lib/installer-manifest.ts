@@ -87,7 +87,7 @@ export async function fetchInstallerManifest(force = false): Promise<InstallerMa
     const response = await fetch(MANIFEST_URL, {
       headers: {
         'Accept': 'application/json',
-        'User-Agent': 'Proma-Desktop-App',
+        'User-Agent': 'pi-agent-Desktop-App',
       },
     })
 

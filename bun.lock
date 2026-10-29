@@ -37,7 +37,7 @@
     },
     "apps/electron": {
       "name": "@proma/electron",
-      "version": "0.19.63",
+      "version": "0.19.64",
       "dependencies": {
         "@codemirror/language": "^6.12.4",
         "@codemirror/state": "^6.7.1",
@@ -166,7 +166,7 @@
     },
     "packages/core": {
       "name": "@proma/core",
-      "version": "0.2.17",
+      "version": "0.2.18",
       "dependencies": {
         "@proma/shared": "workspace:*",
         "highlight.js": "^11.11.1",

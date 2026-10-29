@@ -1,8 +1,8 @@
 {
   "name": "@proma/core",
-  "version": "0.2.17",
+  "version": "0.2.18",
   "license": "AGPL-3.0-only",
-  "description": "proma core types,storage and core logic with agents",
+  "description": "pi-agent core types, storage and agent logic",
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

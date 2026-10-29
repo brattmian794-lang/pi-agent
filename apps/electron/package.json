@@ -1,7 +1,7 @@
 {
   "name": "@proma/electron",
-  "version": "0.19.63",
-  "description": "Proma，为专业用户设计的 Agent",
+  "version": "0.19.64",
+  "description": "pi-agent，本地优先的开源 AI 桌面 Agent",
   "main": "dist/main.cjs",
   "author": {
     "name": "ErlichLiu",
@@ -184,5 +184,5 @@
     "extends": "electron-builder.yml"
   },
   "proma": {},
-  "homepage": "https://github.com/proma-ai/Proma"
+  "homepage": "https://github.com/brattmian794-lang/pi-agent"
 }

@@ -6,12 +6,12 @@
 
 import * as React from 'react'
 import { useAtom, useSetAtom } from 'jotai'
-import { CheckCircle2, ExternalLink, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { CheckCircle2, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { PROVIDER_LABELS } from '@proma/shared'
 import type { Channel } from '@proma/shared'
-import { getChannelLogo, PromaLogo } from '@/lib/model-logo'
+import { getChannelLogo } from '@/lib/model-logo'
 import { agentChannelIdAtom, agentModelIdAtom } from '@/atoms/agent-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
 import { SettingsSection, SettingsCard, SettingsRow } from './primitives'
@@ -158,9 +158,6 @@ export function ChannelSettings(): React.ReactElement {
             onDismiss={() => setRecentlyAuthorizedChannel(null)}
           />
         )}
-        <SettingsCard>
-          <PromaProviderCard />
-        </SettingsCard>
         {loading ? (
           <div className="text-sm text-muted-foreground py-8 text-center">加载中...</div>
         ) : channels.length === 0 ? (
@@ -206,9 +203,6 @@ export function ChannelSettings(): React.ReactElement {
   )
 }
 
-function openPromaDownload(): void {
-  window.open('https://proma.cool/download', '_blank')
-}
 
 // ===== 授权成功反馈 =====
 
@@ -307,23 +301,6 @@ function ChannelRow({ channel, onEdit, onDelete, onToggle }: ChannelRowProps): R
           onCheckedChange={onToggle}
         />
       </div>
-    </SettingsRow>
-  )
-}
-
-// ===== Proma 官方供应商推广卡片 =====
-
-function PromaProviderCard(): React.ReactElement {
-  return (
-    <SettingsRow
-      label="Proma"
-      icon={<img src={PromaLogo} alt="Proma" className="w-8 h-8 rounded" />}
-      description="Proma 商业版｜安全、稳定、优惠的内置模型｜适用于 Chat 与 Agent"
-    >
-      <Button size="sm" variant="outline" className="gap-1.5" onClick={openPromaDownload}>
-        <ExternalLink size={13} />
-        <span>下载商业版</span>
-      </Button>
     </SettingsRow>
   )
 }

@@ -125,7 +125,7 @@ function StartupLoadingScreen(): React.ReactElement {
             alt=""
             className="h-9 w-9 object-contain drop-shadow-[0_1px_2px_rgba(0,0,0,0.35)]"
           />
-          <span className="text-xl font-light tracking-wide">Proma</span>
+          <span className="text-xl font-light tracking-wide">pi-agent</span>
         </div>
 
         <p className="mt-6 max-w-xs text-balance text-lg font-light leading-relaxed tracking-[0.04em] text-white/95">
@@ -135,7 +135,7 @@ function StartupLoadingScreen(): React.ReactElement {
         <div className="mt-7 h-px w-24 overflow-hidden bg-white/35">
           <div className="h-full w-2/5 animate-pulse bg-white/90" />
         </div>
-        <p className="mt-4 text-sm font-medium tracking-[0.08em] text-white/95">正在启动 Proma</p>
+        <p className="mt-4 text-sm font-medium tracking-[0.08em] text-white/95">正在启动 pi-agent</p>
       </div>
 
       <p className="absolute bottom-8 px-6 text-center text-[11px] uppercase tracking-[0.3em] text-white/65">
