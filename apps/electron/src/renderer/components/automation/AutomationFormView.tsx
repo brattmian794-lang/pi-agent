@@ -513,19 +513,20 @@ export function AutomationFormView({ embedded = false }: { embedded?: boolean } 
     }
 
     setRunningNow(true)
-    toast.success('已开始运行定时任务', {
-      description: '本次任务会创建新的 Agent 会话，可在左侧会话列表查看',
-    })
     try {
       const automationId = await persistDraft(latest)
       if (!automationId) throw new Error('任务尚未创建')
       await window.electronAPI.runAutomationNow(automationId)
+      toast.success('已开始运行定时任务', {
+        description: '本次任务会创建新的 Agent 会话，可在左侧会话列表查看',
+      })
       await refreshAutomations()
       const sessions = await window.electronAPI.listActiveAgentSessions()
       setAgentSessions(sessions)
     } catch (err) {
+      const message = err instanceof Error ? err.message : '未知错误'
       console.error('[定时任务] 立即运行失败:', err)
-      toast.error('立即运行失败')
+      toast.error(`立即运行失败：${message}`)
     } finally {
       if (isMountedRef.current) setRunningNow(false)
     }

@@ -97,6 +97,10 @@ function formatScheduleLabel(a: Automation): string {
 let tickTimer: NodeJS.Timeout | undefined
 /** 正在执行中的 automation id 集合，防止同一任务重入 */
 const runningAutomations = new Set<string>()
+/** 判断任务是否已有一轮运行中的执行；手动触发用它拒绝重复点击。 */
+export function isAutomationRunning(id: string): boolean {
+  return runningAutomations.has(id)
+}
 
 /** 向所有渲染窗口广播任务列表变更，触发前端刷新 */
 export function broadcastChanged(): void {
@@ -253,7 +257,7 @@ export async function runAutomation(automation: Automation, manual = false): Pro
   }
 }
 
-/** 立即运行一次（手动触发，不影响调度计时之外的逻辑） */
+/** 立即启动一次（手动触发只等待启动请求被接收，不等待 Agent 完成）。 */
 export async function runAutomationNow(id: string): Promise<void> {
   const automation = getAutomation(id)
   if (!automation) throw new Error(`定时任务不存在: ${id}`)
@@ -261,7 +265,13 @@ export async function runAutomationNow(id: string): Promise<void> {
   if (!automation.channelId || !automation.workspaceId) {
     throw new Error('请先为该任务配置模型与项目')
   }
-  await runAutomation(automation, true)
+  if (isAutomationRunning(id)) {
+    throw new Error('上一轮定时任务尚未结束，请等待运行完成后再试')
+  }
+
+  // runAutomation 会在同步阶段占用 runningAutomations，随后异步运行 Agent。
+  // IPC 不应等待整轮任务，否则模型请求或工具执行期间前端会表现为无响应。
+  void runAutomation(automation, true)
 }
 
 /** 一个 tick：扫描所有 active 且到期的任务并触发 */

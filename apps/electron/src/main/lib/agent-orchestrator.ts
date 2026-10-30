@@ -1951,7 +1951,7 @@ export class AgentOrchestrator {
                 // 透传归一化后的错误消息到前端，避免 SDK 原始 API Error 直接暴露给用户。
                 emitLiveSdkMessage(errorSDKMsg)
                 try { updateAgentSessionMeta(sessionId, {}) } catch { /* 忽略 */ }
-                completeRun(getAgentSessionMessages(sessionId), { startedAt: streamStartedAt })
+                failRun(errorContent, getAgentSessionMessages(sessionId), { startedAt: streamStartedAt })
                 return
               }
             }

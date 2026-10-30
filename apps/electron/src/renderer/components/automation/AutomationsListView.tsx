@@ -167,13 +167,14 @@ function Section({ title, automations, onEdit, onRefresh, onDelete }: SectionPro
       onEdit(a)
       return
     }
-    toast.success(`已开始运行「${a.name}」`, {
-      description: '本次任务会创建新的 Agent 会话，可在左侧会话列表查看',
-    })
     try {
       await window.electronAPI.runAutomationNow(a.id)
+      toast.success(`已开始运行「${a.name}」`, {
+        description: '本次任务会创建新的 Agent 会话，可在左侧会话列表查看',
+      })
     } catch (err) {
-      toast.error('运行失败')
+      const message = err instanceof Error ? err.message : '未知错误'
+      toast.error(`运行失败：${message}`)
       console.error('[定时任务] 立即运行失败:', err)
     }
   }
