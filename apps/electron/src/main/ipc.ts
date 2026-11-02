@@ -5,6 +5,7 @@
  */
 
 import { ipcMain, nativeTheme, shell, dialog, BrowserWindow, app, clipboard, nativeImage } from 'electron'
+import { registerDiagnosticIpc } from './lib/diagnostic-service'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { existsSync, realpathSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { realpath, stat, writeFile } from 'node:fs/promises'
@@ -1396,6 +1397,7 @@ async function withOAuthDeviceCodeQr<T extends CodexOAuthDeviceCode | GithubCopi
 }
 
 export function registerIpcHandlers(): void {
+  registerDiagnosticIpc()
   // ===== 本地终端（仅主 renderer 可操作，不能指定可执行文件） =====
   const assertMainTerminalRenderer = (senderId: number): void => {
     const mainWindow = getMainWindow()

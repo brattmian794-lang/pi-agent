@@ -86,6 +86,7 @@ import { initShortcutRegistry, updateShortcutOverrides } from './lib/shortcut-re
 import { triggerLegacyScratchPadMigration } from './lib/legacy-scratch-pad-migration'
 import { initializePerformanceMonitor } from './lib/performance-monitor'
 import { createUpdateReminderScheduler, type UpdateReminderScheduler } from './lib/update-reminder-scheduler'
+import { initializeDiagnosticCapture } from './lib/diagnostics'
 import './styles/globals.css'
 import 'katex/dist/katex.min.css'
 
@@ -96,6 +97,8 @@ const isDetachedPreviewWindow = new URLSearchParams(window.location.search).get(
 const isWorkspaceMemoryWindow = new URLSearchParams(window.location.search).get('window') === 'workspace-memory'
 const isAgentStatusHoverWindow = new URLSearchParams(window.location.search).get('window') === 'agent-status-hover'
 const isMainWindow = !isQuickTaskWindow && !isVoiceDictationIndicatorWindow && !isDetachedPreviewWindow && !isWorkspaceMemoryWindow && !isAgentStatusHoverWindow
+
+if (isMainWindow) initializeDiagnosticCapture()
 
 initializePerformanceMonitor()
 

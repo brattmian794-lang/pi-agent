@@ -295,6 +295,8 @@ export const BROWSER_RISK_DISCLAIMER_VERSION = 1
 
 /** 应用设置 */
 export interface AppSettings {
+  /** 本地诊断日志默认关闭，不改变构建模式或数据目录。 */
+  diagnosticLoggingEnabled?: boolean
   /** 主题模式 */
   themeMode: ThemeMode
   /** 特殊风格主题 */

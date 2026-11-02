@@ -8,6 +8,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, SLACK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, PLANNING_IPC_CHANNELS, VAULT_IPC_CHANNELS, AGENT_ISLAND_IPC_CHANNELS, TERMINAL_IPC_CHANNELS } from '@proma/shared'
 import { USER_PROFILE_IPC_CHANNELS, SETTINGS_IPC_CHANNELS, SCRATCH_PAD_IPC_CHANNELS, APP_ICON_IPC_CHANNELS, DOCK_BADGE_IPC_CHANNELS, STORAGE_IPC_CHANNELS } from '../types'
+import { DIAGNOSTIC_IPC_CHANNELS } from '@proma/shared'
+import type { DiagnosticState, DiagnosticRecordInput, DiagnosticExportResult } from '@proma/shared'
 import type {
   RuntimeStatus,
   GitRepoStatus,
@@ -449,6 +451,14 @@ export interface ElectronAPI {
   updateUserProfile: (updates: Partial<UserProfile>) => Promise<UserProfile>
 
   // ===== 应用设置相关 =====
+  getDiagnosticState: () => Promise<DiagnosticState>
+  setDiagnosticEnabled: (enabled: boolean) => Promise<DiagnosticState>
+  openDiagnosticDevTools: () => Promise<void>
+  openDiagnosticDirectory: () => Promise<void>
+  exportDiagnosticLogs: () => Promise<DiagnosticExportResult>
+  recordDiagnosticLog: (input: DiagnosticRecordInput) => void
+  onDiagnosticStateChanged: (callback: (state: DiagnosticState) => void) => () => void
+
 
   /** 获取应用设置 */
   getSettings: () => Promise<AppSettings>
@@ -1723,6 +1733,18 @@ const electronAPI: ElectronAPI = {
   },
 
   // 应用设置
+  getDiagnosticState: () => ipcRenderer.invoke(DIAGNOSTIC_IPC_CHANNELS.GET_STATE),
+  setDiagnosticEnabled: (enabled) => ipcRenderer.invoke(DIAGNOSTIC_IPC_CHANNELS.SET_ENABLED, enabled),
+  openDiagnosticDevTools: () => ipcRenderer.invoke(DIAGNOSTIC_IPC_CHANNELS.OPEN_DEVTOOLS),
+  openDiagnosticDirectory: () => ipcRenderer.invoke(DIAGNOSTIC_IPC_CHANNELS.OPEN_DIRECTORY),
+  exportDiagnosticLogs: () => ipcRenderer.invoke(DIAGNOSTIC_IPC_CHANNELS.EXPORT),
+  recordDiagnosticLog: (input) => ipcRenderer.send(DIAGNOSTIC_IPC_CHANNELS.RECORD, input),
+  onDiagnosticStateChanged: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: DiagnosticState): void => callback(state)
+    ipcRenderer.on(DIAGNOSTIC_IPC_CHANNELS.STATE_CHANGED, listener)
+    return () => { ipcRenderer.removeListener(DIAGNOSTIC_IPC_CHANNELS.STATE_CHANGED, listener) }
+  },
+
   getSettings: () => {
     return ipcRenderer.invoke(SETTINGS_IPC_CHANNELS.GET)
   },

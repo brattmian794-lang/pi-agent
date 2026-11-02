@@ -22,6 +22,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { ReleaseNotesViewer } from './ReleaseNotesViewer'
 import { VersionHistory } from './VersionHistory'
+import { DiagnosticSettingsCard } from './DiagnosticSettingsCard'
 
 /** 从 package.json 构建时由 Vite define 注入 */
 declare const __APP_VERSION__: string
@@ -528,6 +529,8 @@ export function AboutSettings(): React.ReactElement {
           </a>
         </SettingsRow>
       </SettingsCard>
+
+      <DiagnosticSettingsCard />
 
       {/* 自动更新卡片（updater 不可用时不渲染） */}
       <UpdateCard />

@@ -52,6 +52,7 @@ function registerProtocolsAndHandlers(): void {
 
 
 import { getSettings, updateSettings } from './lib/settings-service'
+import { initializeDiagnostics } from './lib/diagnostic-service'
 import { handlePromaFileRequest } from './lib/local-file-protocol'
 
 // 处理 EPIPE 错误：当 stdout/stderr 管道被关闭时（如 electronmon 重启），忽略写入错误
@@ -717,6 +718,7 @@ app.whenReady().then(bootstrap).catch(handleBootstrapFailure)
  * 单点失败不应阻止窗口和托盘的创建（用户至少要能看到界面）。
  */
 async function bootstrap(): Promise<void> {
+  safeRun('initializeDiagnostics', initializeDiagnostics)
   // 初始化 pi-agent 版本号（供 User-Agent 等全局标识使用）
   setPromaVersion(app.getVersion())
 
