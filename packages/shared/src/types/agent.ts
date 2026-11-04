@@ -1763,7 +1763,7 @@ export interface PermissionRequest {
   toolInput: Record<string, unknown>
   /** 操作描述（人类可读，Proma 生成） */
   description: string
-  /** 具体命令（Bash 工具时有值��� */
+  /** 具体命令（Bash 工具时有值） */
   command?: string
   /** 危险等级 */
   dangerLevel: DangerLevel
@@ -1790,6 +1790,12 @@ export interface PermissionResponse {
   /** 是否记住选择（加入会话白名单） */
   alwaysAllow: boolean
 }
+
+export type {
+  AgentBackgroundCommand, AgentBackgroundCommandStatus, AgentBackgroundCommandStartInput,
+  AgentBackgroundCommandStopResult, AgentBackgroundCommandDetails, AgentBackgroundCommandsChangedEvent,
+} from './background-command'
+export { isAgentBackgroundCommandActive } from './background-command'
 
 // ===== IPC 通道常量 =====
 
@@ -1872,6 +1878,12 @@ export const AGENT_IPC_CHANNELS = {
   SEND_MESSAGE: 'agent:send-message',
   /** 中止 Agent 执行 */
   STOP_AGENT: 'agent:stop',
+
+  /** Pi Shell 后台命令管理 */
+  LIST_BACKGROUND_COMMANDS: 'agent:list-background-commands',
+  STOP_BACKGROUND_COMMAND: 'agent:stop-background-command',
+  GET_BACKGROUND_COMMAND_DETAILS: 'agent:get-background-command-details',
+  BACKGROUND_COMMANDS_CHANGED: 'agent:background-commands-changed',
 
   // Pi 受管浏览器（网页内容与 CDP 仅驻留主进程）
   OPEN_BROWSER: 'agent:open-browser',

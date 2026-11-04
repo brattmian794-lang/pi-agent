@@ -8,6 +8,7 @@ import { useStickToBottomContext } from 'use-stick-to-bottom'
 import { TaskProgressCard } from './TaskProgressCard'
 import { aggregateTaskItems, getTaskProgressCounts, isTerminalTaskStatus, type TaskItem } from './task-progress'
 
+import { BackgroundCommandsOverlay } from './BackgroundCommandsOverlay'
 const FINISH_RETENTION_MS = 4_000
 const FADE_OUT_DURATION_MS = 200
 
@@ -31,6 +32,7 @@ export interface ContextCompactionProgress {
 
 interface TaskProgressOverlayProps {
   /** 仅当前 live turn 的任务工具活动，不传历史 turn。 */
+  sessionId: string
   activities: ToolActivity[]
   streaming: boolean
   /** 与 Agent 任务并列的系统级短时操作；当前用于上下文压缩。 */
@@ -93,7 +95,7 @@ function CompactionProgressDetails({ progress }: { progress: ContextCompactionPr
  * 取代单独的“回到最下方”按钮：任务进行时展示单行进度，点击展开完整任务卡；
  * 无任务时自动退化为原箭头按钮。
  */
-export function TaskProgressOverlay({ activities, streaming, contextCompaction }: TaskProgressOverlayProps): React.ReactElement | null {
+export function TaskProgressOverlay({ sessionId, activities, streaming, contextCompaction }: TaskProgressOverlayProps): React.ReactElement | null {
   const { isAtBottom, scrollToBottom } = useStickToBottomContext()
   const liveItems = React.useMemo(
     () => aggregateTaskItems(activities, false),
@@ -195,64 +197,69 @@ export function TaskProgressOverlay({ activities, streaming, contextCompaction }
   const currentTask = getCurrentTask(displayItems)
   const showTaskProgress = visible && (hasDisplayTasks || !!displayCompaction)
 
-  if (!showTaskProgress && isAtBottom) return null
+  if (!showTaskProgress && isAtBottom) return (
+    <div className="pointer-events-none absolute bottom-[22px] left-1/2 z-10 -translate-x-1/2">
+      <BackgroundCommandsOverlay sessionId={sessionId} />
+    </div>
+  )
 
   if (!showTaskProgress) {
     return (
-      <Button
-        className="absolute bottom-[26px] left-1/2 size-10 -translate-x-1/2 rounded-md border border-border/60 bg-background/85 shadow-sm backdrop-blur-sm transition-[background-color,transform] duration-200 hover:bg-accent/80 active:scale-[0.96]"
-        onClick={() => scrollToBottom()}
-        type="button"
-        variant="ghost"
-      >
-        <ArrowDownIcon className="size-4" />
-      </Button>
+      <div className="pointer-events-none absolute bottom-[22px] left-1/2 z-10 flex w-max max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2">
+        <BackgroundCommandsOverlay sessionId={sessionId} />
+        <Button
+          aria-label="回到最下方"
+          className="pointer-events-auto size-9 shrink-0 rounded-full border border-border/60 bg-background/95 shadow-sm backdrop-blur-md transition-colors hover:bg-accent"
+          onClick={() => scrollToBottom()}
+          type="button"
+          variant="ghost"
+        >
+          <ArrowDownIcon className="size-4" />
+        </Button>
+      </div>
     )
   }
 
   return (
-    <div className={cn(
-      'pointer-events-none absolute bottom-[22px] left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 transition-opacity duration-200',
-      fading && 'opacity-0',
-    )}>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className={cn(
-              'pointer-events-auto flex min-h-10 max-w-[min(460px,calc(100vw-9rem))] items-center gap-2 rounded-md border border-border/60 bg-background/85 py-2 pr-3 pl-2.5 text-left shadow-sm backdrop-blur-sm',
-              'transition-[background-color,transform] duration-200 hover:bg-accent/80 active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            )}
-          >
-            {displayCompaction ? (
-              <>
-                {displayCompaction.status === 'running' && <Loader2 className="size-3.5 shrink-0 animate-spin text-blue-500" />}
-                {displayCompaction.status === 'success' && <CheckCircle2 className="size-3.5 shrink-0 text-green-500" />}
-                {displayCompaction.status === 'noop' && <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground" />}
-                {displayCompaction.status === 'failed' && <CircleAlert className="size-3.5 shrink-0 text-destructive" />}
-                <span className="truncate text-[13px] text-foreground/90">{displayCompaction.label}</span>
-              </>
-            ) : (
-              <>
-                {currentTask?.status === 'in_progress'
-                  ? <Loader2 className="size-3.5 shrink-0 animate-spin text-blue-500" />
-                  : <ListTodo className="size-3.5 shrink-0 text-muted-foreground" />}
-                <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
-                  {completedCount}/{displayItems.length}
-                </span>
-                <span className="truncate text-[13px] text-foreground/90">
-                  {currentTask?.activeForm ?? currentTask?.subject ?? '任务已完成'}
-                </span>
-              </>
-            )}
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-[min(420px,calc(100vw-2rem))] rounded-md border-border/60 bg-background/95 p-2 backdrop-blur-sm" side="top" align="center">
-          {displayCompaction
-            ? <CompactionProgressDetails progress={displayCompaction} />
-            : <TaskProgressCard activities={displayActivities} streamEnded={!streaming} alwaysExpanded />}
-        </PopoverContent>
-      </Popover>
+    <div className="pointer-events-none absolute bottom-[22px] left-1/2 z-10 flex w-max max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-2">
+      <BackgroundCommandsOverlay sessionId={sessionId} />
+      <div className={cn('min-w-0 transition-opacity duration-200', fading && 'opacity-0')}>
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="pointer-events-auto flex h-9 max-w-full items-center gap-2 rounded-full border border-border/60 bg-background/95 py-2 pr-3 pl-2.5 text-left shadow-sm backdrop-blur-md transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {displayCompaction ? (
+                <>
+                  {displayCompaction.status === 'running' && <Loader2 className="size-3.5 shrink-0 animate-spin text-blue-500" />}
+                  {displayCompaction.status === 'success' && <CheckCircle2 className="size-3.5 shrink-0 text-green-500" />}
+                  {displayCompaction.status === 'noop' && <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground" />}
+                  {displayCompaction.status === 'failed' && <CircleAlert className="size-3.5 shrink-0 text-destructive" />}
+                  <span className="truncate text-[13px] text-foreground/90">{displayCompaction.label}</span>
+                </>
+              ) : (
+                <>
+                  {currentTask?.status === 'in_progress'
+                    ? <Loader2 className="size-3.5 shrink-0 animate-spin text-blue-500" />
+                    : <ListTodo className="size-3.5 shrink-0 text-muted-foreground" />}
+                  <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
+                    {completedCount}/{displayItems.length}
+                  </span>
+                  <span className="truncate text-[13px] text-foreground/90">
+                    {currentTask?.activeForm ?? currentTask?.subject ?? '任务已完成'}
+                  </span>
+                </>
+              )}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[min(420px,calc(100vw-2rem))] rounded-md border-border/60 bg-background/95 p-2 backdrop-blur-sm" side="top" align="center">
+            {displayCompaction
+              ? <CompactionProgressDetails progress={displayCompaction} />
+              : <TaskProgressCard activities={displayActivities} streamEnded={!streaming} alwaysExpanded />}
+          </PopoverContent>
+        </Popover>
+      </div>
 
       {!isAtBottom && (
         <Button

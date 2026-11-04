@@ -175,6 +175,11 @@ function handleQueryStart(request: RuntimeRequest): void {
 
   const utilityInput = {
     ...queryInput,
+    backgroundCommands: {
+      start: (input: unknown) => requestParent(AGENT_RUNTIME_METHODS.CAPABILITY_BACKGROUND_COMMAND, { queryId, sessionId, action: 'start', input }),
+      list: () => requestParent(AGENT_RUNTIME_METHODS.CAPABILITY_BACKGROUND_COMMAND, { queryId, sessionId, action: 'list' }),
+      output: (commandId: string) => requestParent(AGENT_RUNTIME_METHODS.CAPABILITY_BACKGROUND_COMMAND, { queryId, sessionId, action: 'output', input: { commandId } }),
+    },
     canUseTool: (toolName: string, toolInput: Record<string, unknown>, options: Record<string, unknown>) => requestParent(
       AGENT_RUNTIME_METHODS.CAPABILITY_CAN_USE_TOOL,
       { queryId, sessionId, toolName, input: toolInput, options: serializeCanUseToolOptions(options) },
@@ -297,6 +302,7 @@ async function handleSetPermissionMode(request: RuntimeRequest): Promise<void> {
   await piAdapter.setPermissionMode(activeQuery.sessionId, payload.mode)
   respond(request, { accepted: true })
 }
+
 
 async function handleShutdown(request: RuntimeRequest): Promise<void> {
   status = 'stopping'

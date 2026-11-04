@@ -1255,6 +1255,7 @@ export const AgentMessages = React.memo(function AgentMessages({
         <ScrollMinimap items={minimapItems} searchMessages={searchMessages} />
         <TaskProgressOverlay
           key={sessionId}
+          sessionId={sessionId}
           activities={liveTaskActivities}
           streaming={streaming}
           contextCompaction={contextCompaction}

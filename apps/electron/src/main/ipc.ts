@@ -300,7 +300,9 @@ import {
   searchAgentSessionReferences,
   resolveAgentCwd,
 } from './lib/agent-session-manager'
-import { runAgent, stopAgent, stopAgentAndDrain, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, isAgentSessionBusy, listActiveAgentSessionSnapshots, listQueuedAgentMessages, reserveAgentSessionStart, queueAgentMessage, submitOrEnqueueAgentMessage, enqueueAgentQueuedMessage, cancelAgentQueuedMessage, moveAgentQueuedMessage, clearAgentQueuedMessages, updateAgentPermissionMode, rewindAgentSession, setVisibleAgentSession } from './lib/agent-service'
+import { runAgent, stopAgent, stopAgentAndDrain, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, isAgentSessionBusy, listActiveAgentSessionSnapshots, listQueuedAgentMessages, reserveAgentSessionStart, queueAgentMessage, submitOrEnqueueAgentMessage, enqueueAgentQueuedMessage, cancelAgentQueuedMessage, moveAgentQueuedMessage, clearAgentQueuedMessages, updateAgentPermissionMode, rewindAgentSession, setVisibleAgentSession, listAgentBackgroundCommands, stopAgentBackgroundCommand } from './lib/agent-service'
+import { getAgentBackgroundCommandDetails } from './lib/agent-service'
+import { registerBackgroundCommandIpc } from './lib/background-command-ipc'
 import { permissionService } from './lib/agent-permission-service'
 import { resolvePathAgainstAgentCwd } from './lib/agent-file-path'
 import { askUserService } from './lib/agent-ask-user-service'
@@ -2509,6 +2511,13 @@ export function registerIpcHandlers(): void {
     AGENT_IPC_CHANNELS.LIST_SESSIONS,
     async (): Promise<AgentSessionMeta[]> => listAgentSessions()
   )
+
+  registerBackgroundCommandIpc(ipcMain, {
+    assertRenderer: assertMainTerminalRenderer,
+    list: listAgentBackgroundCommands,
+    stop: stopAgentBackgroundCommand,
+    details: getAgentBackgroundCommandDetails,
+  })
 
   // 获取未归档会话列表（侧栏 active 视图）
   ipcMain.handle(

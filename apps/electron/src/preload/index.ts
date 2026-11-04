@@ -662,6 +662,11 @@ export interface ElectronAPI {
   /** 中止 Agent 执行 */
   stopAgent: (sessionId: string) => Promise<void>
 
+  listAgentBackgroundCommands: (sessionId: string) => Promise<import('@proma/shared').AgentBackgroundCommand[]>
+  stopAgentBackgroundCommand: (sessionId: string, commandId: string) => Promise<import('@proma/shared').AgentBackgroundCommandStopResult>
+  getAgentBackgroundCommandDetails: (sessionId: string, commandId: string) => Promise<import('@proma/shared').AgentBackgroundCommandDetails | null>
+  onAgentBackgroundCommandsChanged: (callback: (event: import('@proma/shared').AgentBackgroundCommandsChangedEvent) => void) => () => void
+
   // ===== Agent 队列消息 =====
 
   /** 流式追加发送 Agent 消息（Agent 运行中） */
@@ -2024,6 +2029,15 @@ const electronAPI: ElectronAPI = {
   getQueuedAgentMessages: (sessionId: string) => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_QUEUED_MESSAGES, sessionId)
   },
+  listAgentBackgroundCommands: (sessionId: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_BACKGROUND_COMMANDS, sessionId),
+  stopAgentBackgroundCommand: (sessionId: string, commandId: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.STOP_BACKGROUND_COMMAND, sessionId, commandId),
+  getAgentBackgroundCommandDetails: (sessionId: string, commandId: string) => ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_BACKGROUND_COMMAND_DETAILS, sessionId, commandId),
+  onAgentBackgroundCommandsChanged: (callback: (event: import('@proma/shared').AgentBackgroundCommandsChangedEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, change: import('@proma/shared').AgentBackgroundCommandsChangedEvent): void => callback(change)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.BACKGROUND_COMMANDS_CHANGED, listener)
+    return () => { ipcRenderer.removeListener(AGENT_IPC_CHANNELS.BACKGROUND_COMMANDS_CHANGED, listener) }
+  },
+
   onAgentQueuedMessageStatus: (callback: (status: AgentQueuedMessageStatus) => void) => {
     const listener = (_: unknown, status: AgentQueuedMessageStatus): void => callback(status)
     ipcRenderer.on(AGENT_IPC_CHANNELS.QUEUED_MESSAGE_STATUS, listener)

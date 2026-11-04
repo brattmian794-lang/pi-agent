@@ -82,6 +82,7 @@ export const AGENT_RUNTIME_METHODS = {
   CAPABILITY_CAN_USE_TOOL: 'agent.capability.canUseTool',
   CAPABILITY_CANCEL: 'agent.capability.cancel',
   CAPABILITY_CUSTOM_TOOL: 'agent.capability.customTool',
+  CAPABILITY_BACKGROUND_COMMAND: 'agent.capability.backgroundCommand',
   CAPABILITY_CODEX_OAUTH_REFRESHED: 'agent.capability.codex_oauth_refreshed',
   CAPABILITY_GITHUB_COPILOT_OAUTH_REFRESHED: 'agent.capability.github_copilot_oauth_refreshed',
   CAPABILITY_XAI_OAUTH_REFRESHED: 'agent.capability.xai_oauth_refreshed',

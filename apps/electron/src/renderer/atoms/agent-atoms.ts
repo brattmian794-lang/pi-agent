@@ -9,7 +9,7 @@ import { atom } from 'jotai'
 import type { Getter } from 'jotai'
 import { atomWithStorage, selectAtom } from 'jotai/utils'
 import { atomFamily } from 'jotai-family'
-import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, AgentEffort, SDKMessage, UnstagedChangesResult } from '@proma/shared'
+import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, AgentEffort, SDKMessage, UnstagedChangesResult, AgentBackgroundCommand } from '@proma/shared'
 import { PROMA_DEFAULT_PERMISSION_MODE } from '@proma/shared'
 import { calculateDockBadgeCount, countPendingRequests } from '@/lib/dock-badge-count'
 import type { AgentQueuedMessage } from '@/lib/agent-message-queue'
@@ -422,6 +422,11 @@ export const liveMessagesMapAtom = atom<Map<string, SDKMessage[]>>(new Map())
 const EMPTY_LIVE_SDK_MESSAGES: SDKMessage[] = []
 
 /** 单个 session 的实时消息切片；其他 session 流式更新不唤醒当前历史区。 */
+export const agentBackgroundCommandsAtom = atom<Map<string, AgentBackgroundCommand[]>>(new Map())
+export const agentBackgroundCommandsAtomFamily = atomFamily((sessionId: string) =>
+  atom((get) => get(agentBackgroundCommandsAtom).get(sessionId) ?? []),
+)
+
 export const agentLiveMessagesAtomFamily = atomFamily((sessionId: string) =>
   atom((get) => get(liveMessagesMapAtom).get(sessionId) ?? EMPTY_LIVE_SDK_MESSAGES),
 )

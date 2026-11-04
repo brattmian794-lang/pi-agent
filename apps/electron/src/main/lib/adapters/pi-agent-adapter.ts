@@ -87,6 +87,8 @@ import {
   installPiRequestProxyFetch,
   runWithPiRequestProxy,
 } from './pi-request-proxy'
+import type { BackgroundCommandService } from '../background-command-service'
+import { createManagedPiShellTool, createPiBackgroundQueryTool, type PiBackgroundCommandClient } from './pi-background-command-tool'
 
 type PiSdk = typeof import('@earendil-works/pi-coding-agent')
 type BashOperations = import('@earendil-works/pi-coding-agent').BashOperations
@@ -167,6 +169,7 @@ export interface PiAgentQueryOptions extends AgentQueryInput {
   /** WebSocket 建连超时，单位毫秒；0 表示交给 Pi SDK 禁用超时 */
   websocketConnectTimeoutMs?: number
   runtimeEnv?: AgentRuntimeEnv
+  backgroundCommands?: PiBackgroundCommandClient
   /** 手动压缩请求：走 pi 原生 session.compact()，而非把 /compact 当普通 prompt 发给模型 */
   compactRequest?: boolean
   /** ChatGPT Codex Fast Mode；仅 openai-codex 的受支持模型实际注入 priority service tier。 */
@@ -1218,25 +1221,10 @@ function createWslBashOperations(runtimeEnv: AgentRuntimeEnv): BashOperations {
   }
 }
 
-function createPromaBashToolOptions(runtimeEnv: AgentRuntimeEnv | undefined): BashToolOptions | undefined {
-  if (!runtimeEnv) return undefined
-
-  const spawnHook: NonNullable<BashToolOptions['spawnHook']> = ({ command, cwd, env }) => ({
-    command,
-    cwd,
-    env: mergeRuntimeEnv(env, runtimeEnv.env),
-  })
-
-  if (runtimeEnv.shellKind === 'wsl') {
-    return {
-      operations: createWslBashOperations(runtimeEnv),
-      spawnHook,
-    }
-  }
-
+function createPromaBashToolOptions(sdk: PiSdk, runtimeEnv: AgentRuntimeEnv | undefined): BashToolOptions {
   return {
-    ...(runtimeEnv.shellPath && { shellPath: runtimeEnv.shellPath }),
-    spawnHook,
+    operations: runtimeEnv?.shellKind === 'wsl' ? createWslBashOperations(runtimeEnv) : sdk.createLocalBashOperations({ shellPath: runtimeEnv?.shellPath }),
+    spawnHook: ({ command, cwd, env }) => ({ command, cwd, env: mergeRuntimeEnv(env, runtimeEnv?.env) }),
   }
 }
 
@@ -1265,14 +1253,10 @@ export function selectPiBuiltinShellTool(
   return 'none'
 }
 
-function createPromaPowerShellToolOptions(runtimeEnv: AgentRuntimeEnv | undefined): PowerShellToolOptions | undefined {
-  if (!runtimeEnv) return undefined
+function createPromaPowerShellToolOptions(sdk: PiSdk, runtimeEnv: AgentRuntimeEnv | undefined): PowerShellToolOptions {
   return {
-    spawnHook: ({ command, cwd, env }) => ({
-      command,
-      cwd,
-      env: mergeRuntimeEnv(env, runtimeEnv.env),
-    }),
+    operations: sdk.createLocalPowerShellOperations(),
+    spawnHook: ({ command, cwd, env }) => ({ command, cwd, env: mergeRuntimeEnv(env, runtimeEnv?.env) }),
   }
 }
 
@@ -1281,23 +1265,24 @@ function buildBuiltinToolDefinitions(
   cwd: string,
   canUseTool: PiAgentQueryOptions['canUseTool'],
   runtimeEnv: AgentRuntimeEnv | undefined,
+  backgroundCommands?: PiBackgroundCommandClient,
 ): ToolDefinition[] {
   const shellTool = selectPiBuiltinShellTool(process.platform, runtimeEnv)
   const definitions = [
     sdk.createReadToolDefinition(cwd),
     ...(shellTool === 'bash'
-      ? [sdk.createBashToolDefinition(cwd, createPromaBashToolOptions(runtimeEnv))]
+      ? [createManagedPiShellTool(sdk.createBashToolDefinition(cwd, createPromaBashToolOptions(sdk, runtimeEnv)) as ToolDefinition, backgroundCommands)]
       : []),
     ...(shellTool === 'powershell'
-      ? [sdk.createPowerShellToolDefinition(cwd, createPromaPowerShellToolOptions(runtimeEnv))]
+      ? [createManagedPiShellTool(sdk.createPowerShellToolDefinition(cwd, createPromaPowerShellToolOptions(sdk, runtimeEnv)) as ToolDefinition, backgroundCommands)]
       : []),
     sdk.createEditToolDefinition(cwd),
     sdk.createWriteToolDefinition(cwd),
     sdk.createGrepToolDefinition(cwd),
     sdk.createFindToolDefinition(cwd),
     sdk.createLsToolDefinition(cwd),
+    ...(backgroundCommands ? [createPiBackgroundQueryTool(backgroundCommands)] : []),
   ] as unknown as ToolDefinition[]
-
   return definitions.map((tool) =>
     wrapToolWithPermission(tool as unknown as ToolDefinition<TSchema, unknown, unknown>, { canUseTool }) as ToolDefinition)
 }
@@ -1376,6 +1361,7 @@ export function installRuntimeGuardHooks(session: AgentSession, guard: AgentRunt
 
 export class PiAgentAdapter implements AgentProviderAdapter {
   private activeSessions = new Map<string, ActivePiSession>()
+  constructor(private readonly backgroundService?: BackgroundCommandService) {}
 
   async *query(input: PiAgentQueryOptions): AsyncIterable<SDKMessage> {
     const active = createActivePiSession()
@@ -1452,6 +1438,11 @@ export class PiAgentAdapter implements AgentProviderAdapter {
           cwd,
           input.canUseTool,
           input.runtimeEnv,
+          input.backgroundCommands ?? (this.backgroundService ? {
+            start: (request) => this.backgroundService!.start(input.sessionId, request, input.runtimeEnv),
+            list: async () => this.backgroundService!.list(input.sessionId),
+            output: async (commandId) => this.backgroundService!.details(input.sessionId, commandId),
+          } : undefined),
         ),
         ...buildPromaProductToolDefinitions(sdk, input.canUseTool),
         ...wrapCustomToolDefinitions(input.customTools, input.canUseTool),
@@ -2011,6 +2002,7 @@ export class PiAgentAdapter implements AgentProviderAdapter {
     active.session?.abortCompaction()
     active.session?.abort().catch(() => {})
   }
+
 
   async sendQueuedMessage(
     sessionId: string,

@@ -36,9 +36,15 @@ import type {
   AgentActiveSessionSnapshot,
   AgentQueuedMessageSnapshot,
   AgentMessage,
+  AgentBackgroundCommand,
+  AgentBackgroundCommandStopResult,
+  AgentBackgroundCommandDetails,
 } from '@proma/shared'
 import { PiAgentAdapter } from './adapters/pi-agent-adapter'
 import { PiUtilityAdapter } from './adapters/pi-utility-adapter'
+import { BackgroundCommandService } from './background-command-service'
+import { BackgroundCommandStore } from './background-command-store'
+import { getConfigDir } from './config-paths'
 import { AgentEventBus } from './agent-event-bus'
 import { AgentOrchestrator } from './agent-orchestrator'
 import { getAgentSessionWorkspacePath } from './config-paths'
@@ -57,9 +63,15 @@ import { shouldStopBeforeAgentRun } from './agent-stop-policy'
 // ===== 实例创建 =====
 
 const eventBus = new AgentEventBus()
+const backgroundCommands = new BackgroundCommandService({
+  store: new BackgroundCommandStore(join(getConfigDir(), 'background-commands')),
+  onChanged: notifyBackgroundCommandsChanged,
+})
 const useUtilityAgentRuntime = process.env.PROMA_AGENT_RUNTIME !== 'in-process'
   && process.env.PROMA_AGENT_RUNTIME !== 'off'
-const adapter = useUtilityAgentRuntime ? new PiUtilityAdapter() : new PiAgentAdapter()
+const adapter = useUtilityAgentRuntime
+  ? new PiUtilityAdapter(backgroundCommands)
+  : new PiAgentAdapter(backgroundCommands)
 const orchestrator = new AgentOrchestrator(adapter, eventBus)
 
 /** 导出 EventBus 供飞书 Bridge 等外部服务订阅事件 */
@@ -161,6 +173,11 @@ function getMainRendererWebContents(): WebContents | null {
   return win && !win.webContents.isDestroyed() ? win.webContents : null
 }
 
+
+function notifyBackgroundCommandsChanged(sessionId: string, commands: AgentBackgroundCommand[]): void {
+  const target = streamRoutes.get(sessionId)?.target ?? getMainRendererWebContents()
+  if (!target?.isDestroyed()) target?.send(AGENT_IPC_CHANNELS.BACKGROUND_COMMANDS_CHANGED, { sessionId, commands })
+}
 const agentQueueCoordinator = new AgentQueueCoordinator({
   isActive: (sessionId) => orchestrator.isActive(sessionId),
   getWebContents: (sessionId) => streamRoutes.get(sessionId)?.target ?? getMainRendererWebContents(),
@@ -373,6 +390,8 @@ export async function runAgent(
         stoppedByUser: false,
         startedAt: input.startedAt,
         runGeneration: input.runGeneration,
+        resultSubtype: 'error_during_execution',
+        resultErrors: [errorMessage],
       })
     }
     agentQueueCoordinator.onRunComplete(input.sessionId, queueMessageId, false, false)
@@ -567,6 +586,11 @@ export function stopAgent(sessionId: string): void {
 export async function stopAgentAndDrain(sessionId: string): Promise<void> {
   markAgentSessionDeleting(sessionId)
   await orchestrator.stopAndDrain(sessionId)
+  for (const command of backgroundCommands.list(sessionId)) {
+    if (!['starting', 'running', 'stopping', 'stop_failed'].includes(command.status)) continue
+    const result = await backgroundCommands.stop(sessionId, command.id)
+    if (result.reason === 'stop_failed') throw new Error(result.command?.error ?? '后台命令未能停止，暂时无法删除会话')
+  }
 }
 
 setHeadlessAgentRunner(runAgentHeadless)
@@ -596,6 +620,25 @@ export function hasActiveAgentSessions(): boolean {
 
 export function listActiveAgentSessionSnapshots(): AgentActiveSessionSnapshot[] {
   return orchestrator.listActiveSessionSnapshots()
+}
+
+export function listAgentBackgroundCommands(sessionId: string): AgentBackgroundCommand[] {
+  if (typeof sessionId !== 'string' || !getAgentSessionMeta(sessionId)) return []
+  return backgroundCommands.list(sessionId)
+}
+
+export function stopAgentBackgroundCommand(sessionId: string, commandId: string): Promise<AgentBackgroundCommandStopResult> {
+  if (typeof sessionId !== 'string' || typeof commandId !== 'string' || !getAgentSessionMeta(sessionId)) return Promise.resolve({ accepted: false, reason: 'not_running' })
+  return backgroundCommands.stop(sessionId, commandId)
+}
+
+export function getAgentBackgroundCommandDetails(sessionId: string, commandId: string): AgentBackgroundCommandDetails | null {
+  if (typeof sessionId !== 'string' || typeof commandId !== 'string' || !getAgentSessionMeta(sessionId)) return null
+  return backgroundCommands.details(sessionId, commandId)
+}
+
+export async function shutdownAgentBackgroundCommands(): Promise<void> {
+  await backgroundCommands.shutdown()
 }
 
 export function listQueuedAgentMessages(sessionId: string): AgentQueuedMessageSnapshot[] {

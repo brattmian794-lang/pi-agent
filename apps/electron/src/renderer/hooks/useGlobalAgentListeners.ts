@@ -12,6 +12,7 @@ import { unstable_batchedUpdates } from 'react-dom'
 import { useStore } from 'jotai'
 import {
   agentStreamingStatesAtom,
+  agentBackgroundCommandsAtom,
   agentSessionStreamingStateAtomFamily,
   agentStreamErrorsAtom,
   agentSessionMessageQueueAtom,
@@ -609,6 +610,15 @@ export function useGlobalAgentListeners(): void {
     /** 正在执行的 git 突变 Bash 命令：toolUseId → sessionId（完成后触发 diff 刷新） */
     const pendingGitMutateTools = new Map<string, string>()
 
+
+    const cleanupBackgroundCommands = window.electronAPI.onAgentBackgroundCommandsChanged(({ sessionId, commands }) => {
+      store.set(agentBackgroundCommandsAtom, (prev) => {
+        const map = new Map(prev)
+        if (commands.length > 0) map.set(sessionId, commands)
+        else map.delete(sessionId)
+        return map
+      })
+    })
     const cleanupQueuedMessageStatus = window.electronAPI.onAgentQueuedMessageStatus((status) => {
       unstable_batchedUpdates(() => {
         // 主进程在启动 deferred run 前先发送 started 投影。这里必须先建立完整的
@@ -2159,6 +2169,7 @@ export function useGlobalAgentListeners(): void {
       cleanupPlaySound()
       cleanupWatchedFileChanges()
       cleanupQueuedMessageStatus()
+      cleanupBackgroundCommands()
       clearInterval(pruneTimer)
       window.removeEventListener('focus', onWindowFocus)
     }

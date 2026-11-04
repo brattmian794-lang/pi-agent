@@ -7,14 +7,15 @@
  * apps/electron/node_modules，保证 packaged app 中 Node 模块解析可用。
  */
 
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, rmSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync } from 'node:fs'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 
 interface PackageManifest {
   name?: string
   dependencies?: Record<string, string>
   optionalDependencies?: Record<string, string>
 }
+import { randomUUID } from 'node:crypto'
 
 interface RuntimeDependency {
   name: string
@@ -116,6 +117,17 @@ function listRuntimeDependencies(manifest: PackageManifest): RuntimeDependency[]
   const optionalDependencies = Object.keys(manifest.optionalDependencies ?? {}).map((name) => ({ name, optional: true }))
   return [...dependencies, ...optionalDependencies]
 }
+/** Windows 扫描器可能短暂持有目录句柄；只重试可恢复的替换错误。 */
+function renamePackageDirectory(source: string, target: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try { renameSync(source, target); return } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '') || attempt >= 9) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100 * (attempt + 1))
+    }
+  }
+}
+
 
 function copyPackage(
   ctx: SyncContext,
@@ -147,14 +159,26 @@ function copyPackage(
   ctx.copiedPackages.set(targetKey, sourceDir)
   if (isTopLevel) ctx.topLevelPackageSources.set(packageName, sourceDir)
 
+  if (resolve(sourceDir) === targetKey) throw new Error(`拒绝覆盖源依赖: ${packageName}`)
   mkdirSync(dirname(targetDir), { recursive: true })
-  rmSync(targetDir, { recursive: true, force: true })
-  cpSync(sourceDir, targetDir, {
-    recursive: true,
-    dereference: true,
-    force: true,
-    preserveTimestamps: true,
-  })
+  const stagingDir = `${targetDir}.proma-sync-${randomUUID()}`
+  const backupDir = `${stagingDir}.previous`
+  let backedUp = false
+  try {
+    cpSync(sourceDir, stagingDir, {
+      recursive: true, dereference: true, force: true, preserveTimestamps: true,
+      // 依赖闭包由下面的 manifest 遍历统一复制，不能再展开源包内的 node_modules。
+      filter: (sourcePath) => relative(sourceDir, sourcePath).split(sep)[0] !== 'node_modules',
+    })
+    if (existsSync(targetDir)) { renamePackageDirectory(targetDir, backupDir); backedUp = true }
+    try { renamePackageDirectory(stagingDir, targetDir) } catch (error) {
+      if (backedUp) { renamePackageDirectory(backupDir, targetDir); backedUp = false }
+      throw error
+    }
+  } finally {
+    rmSync(stagingDir, { recursive: true, force: true })
+    if (backedUp) rmSync(backupDir, { recursive: true, force: true })
+  }
 
   const nextAncestors = new Set(sourceAncestors)
   nextAncestors.add(sourceDir)
@@ -258,6 +282,7 @@ export function syncRuntimeDeps(options: SyncRuntimeDepsOptions = {}): SyncRunti
   }
 
   for (const packageName of externalRuntimePackages) {
+    if (import.meta.main) console.log(`[runtime-deps] 正在同步 ${packageName}`)
     copyPackage(ctx, packageName)
   }
 
@@ -270,8 +295,43 @@ export function syncRuntimeDeps(options: SyncRuntimeDepsOptions = {}): SyncRunti
   }
 }
 
+/** 开发使用源包的真实路径解析依赖；发布模式仍复制为自包含闭包。 */
+export function linkDevelopmentRuntimeDeps(options: SyncRuntimeDepsOptions = {}): SyncRuntimeDepsResult {
+  const sourceRoot = options.sourceNodeModules ?? defaultSourceNodeModules
+  const targetRoot = options.targetNodeModules ?? defaultTargetNodeModules
+  if (resolve(sourceRoot) === resolve(targetRoot) || basename(targetRoot) !== 'node_modules') throw new Error('开发依赖源和目标目录无效')
+  const ctx: SyncContext = { sourceNodeModules: sourceRoot, targetNodeModules: targetRoot, copiedPackages: new Map(), topLevelPackageSources: new Map(), skippedOptionalPackages: [] }
+  const packages = (options.externalRuntimePackages ?? EXTERNAL_RUNTIME_PACKAGES).map((name) => {
+    const source = resolvePackageSourceDir(ctx, name)
+    if (!source) throw new Error(`缺少运行时依赖: ${name}`)
+    readPackageManifest(source)
+    return { name, source, target: getPackageDir(targetRoot, name) }
+  })
+  for (const { name, source, target } of packages) {
+    if (existsSync(target) && realpathSync(target) === source) continue
+    mkdirSync(dirname(target), { recursive: true })
+    const staging = `${target}.proma-link-${randomUUID()}`
+    const backup = `${staging}.previous`
+    let backedUp = false
+    let installed = false
+    try {
+      symlinkSync(source, staging, process.platform === 'win32' ? 'junction' : 'dir')
+      if (existsSync(target)) { renamePackageDirectory(target, backup); backedUp = true }
+      try { renamePackageDirectory(staging, target); installed = true } catch (error) {
+        if (backedUp) { renamePackageDirectory(backup, target); backedUp = false }
+        throw error
+      }
+    } finally {
+      rmSync(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      if (backedUp && installed) rmSync(backup, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
+    if (import.meta.main) console.log(`[runtime-deps] 开发链接已就绪 ${name}`)
+  }
+  return { copiedPackageCount: packages.length, copiedPackages: packages.map((entry) => entry.target), skippedOptionalPackages: [] }
+}
+
 function main(): void {
-  const result = syncRuntimeDeps({ cleanTarget: !process.argv.includes('--no-clean') })
+  const result = process.argv.includes('--no-clean') ? linkDevelopmentRuntimeDeps() : syncRuntimeDeps()
   const skipped = result.skippedOptionalPackages.length > 0
     ? `，跳过未安装 optional 依赖 ${result.skippedOptionalPackages.length} 个`
     : ''

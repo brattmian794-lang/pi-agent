@@ -940,7 +940,21 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
+import { shutdownAgentBackgroundCommands } from './lib/agent-service'
+let backgroundShutdownStarted = false
+let backgroundShutdownComplete = false
+app.on('before-quit', (event) => {
+  if (!backgroundShutdownComplete) {
+    event.preventDefault()
+    if (backgroundShutdownStarted) return
+    backgroundShutdownStarted = true
+    stopAllAgents()
+    void shutdownAgentBackgroundCommands().finally(() => {
+      backgroundShutdownComplete = true
+      app.quit()
+    })
+    return
+  }
   // 标记正在退出，让 close 事件不再阻止关闭
   setQuitting()
 
