@@ -1,6 +1,6 @@
 {
   "name": "@proma/electron",
-  "version": "0.19.70-beta.12",
+  "version": "0.19.70-beta.13",
   "description": "pi-agent，本地优先的开源 AI 桌面 Agent",
   "main": "dist/main.cjs",
   "author": {
@@ -11,6 +11,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun run scripts/dev-kill.ts --vite && concurrently -k -n vite,electron -c blue,green \"bun run dev:vite\" \"bun run dev:electron\"",
+    "release:ensure": "bun run scripts/ensure-release-run.ts",
     "dev:split": "bash scripts/dev-split.sh",
     "dev:vite": "vite dev",
     "dev:kill": "bun run scripts/dev-kill.ts",
