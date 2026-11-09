@@ -1,0 +1,200 @@
+name: Updater Isolation Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging:
+        description: '运行真实签名 staging 安装测试（需要独立制品与凭据）'
+        type: boolean
+        default: false
+      staging-feed-url:
+        description: '独立 staging generic feed HTTPS URL（禁止 GitHub Release）'
+        type: string
+        default: ''
+      staging-old-package-url:
+        description: '旧版安装包的独立下载 URL'
+        type: string
+        default: ''
+      staging-new-package-url:
+        description: '新版安装包的独立下载 URL，必须与 feed 内容一致'
+        type: string
+        default: ''
+      start-version:
+        description: 'staging 旧版版本号'
+        type: string
+        default: '0.19.0-test.1'
+      target-version:
+        description: 'staging 新版版本号'
+        type: string
+        default: '0.20.0-test.1'
+
+permissions:
+  contents: read
+
+jobs:
+  local-feed:
+    name: 本地 feed / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 安装 Linux 构建与显示依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential python3 xvfb libgtk-3-0 libnss3 libasound2
+      - run: bun install --frozen-lockfile
+      - run: bun run electron:build
+      - name: 准备打包运行时
+        shell: bash
+        run: |
+          bun run --filter='@proma/electron' sync:runtime-deps
+          bun run --filter='@proma/electron' rebuild:node-pty
+        working-directory: .
+      - name: 构建专用旧版与新版工件（不发布）
+        working-directory: apps/electron
+        shell: bash
+        run: |
+          bun run updater:fixtures --role old --version 0.19.0-test.1
+          bun run updater:fixtures --role new --version 0.20.0-test.1
+        env:
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+      - name: 运行隔离更新场景
+        if: runner.os != 'Linux'
+        working-directory: apps/electron
+        shell: bash
+        run: |
+          old_package=$(find out/updater-test-fixtures/old -maxdepth 1 -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.AppImage' \) | head -n 1)
+          bun run scripts/updater-test/run-suite.ts "$RUNNER_TEMP/proma-updater-tests" "$old_package" out/updater-test-fixtures/new
+        env:
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+      - name: 在虚拟显示中运行 Linux 隔离更新场景
+        if: runner.os == 'Linux'
+        working-directory: apps/electron
+        run: |
+          old_package=$(find out/updater-test-fixtures/old -maxdepth 1 -type f -name '*.AppImage' | head -n 1)
+          xvfb-run -a bun run scripts/updater-test/run-suite.ts "$RUNNER_TEMP/proma-updater-tests" "$old_package" out/updater-test-fixtures/new
+        env:
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+      - name: 上传结构化报告与日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-local-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            ${{ runner.temp }}/proma-updater-tests/**/*.json
+            ${{ runner.temp }}/proma-updater-tests/**/*.jsonl
+            ${{ runner.temp }}/proma-updater-tests/**/*.log
+          if-no-files-found: error
+
+  signed-staging:
+    name: 真实签名 staging / ${{ matrix.os }}
+    needs: local-feed
+    if: github.event_name == 'workflow_dispatch' && inputs.staging && inputs.staging-feed-url != '' && inputs.staging-old-package-url != '' && inputs.staging-new-package-url != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: 安装 Linux 显示依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgtk-3-0 libnss3 libasound2
+      - name: 校验专用 staging 凭据
+        shell: bash
+        env:
+          WIN_CERT: ${{ secrets.PROMA_STAGING_WIN_CERT }}
+          MAC_CERTS: ${{ secrets.PROMA_STAGING_MAC_CERTS }}
+        run: |
+          if [ "$RUNNER_OS" = Windows ] && [ -z "$WIN_CERT" ]; then
+            echo '缺少 PROMA_STAGING_WIN_CERT'; exit 1
+          fi
+          if [ "$RUNNER_OS" = macOS ] && [ -z "$MAC_CERTS" ]; then
+            echo '缺少 PROMA_STAGING_MAC_CERTS'; exit 1
+          fi
+      - name: 下载独立 staging 工件
+        working-directory: apps/electron
+        shell: bash
+        env:
+          OLD_URL: ${{ inputs.staging-old-package-url }}
+          NEW_URL: ${{ inputs.staging-new-package-url }}
+          START_VERSION: ${{ inputs.start-version }}
+          TARGET_VERSION: ${{ inputs.target-version }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/staging-old out/staging-feed
+          case "$RUNNER_OS" in
+            Windows) extension=exe ;;
+            macOS) extension=zip ;;
+            Linux) extension=AppImage ;;
+          esac
+          curl --fail --location "$OLD_URL" --output "out/staging-old/PromaUpdaterTest Setup $START_VERSION.$extension"
+          curl --fail --location "$NEW_URL" --output "out/staging-feed/PromaUpdaterTest Setup $TARGET_VERSION.$extension"
+      - name: 验证 Windows 专用签名
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-ChildItem out/staging-old,out/staging-feed -Filter *.exe | ForEach-Object {
+            $signature = Get-AuthenticodeSignature $_.FullName
+            if ($signature.Status -ne 'Valid') { throw "staging 包签名无效: $($_.FullName)" }
+          }
+        working-directory: apps/electron
+      - name: 验证 macOS 专用签名
+        if: runner.os == 'macOS'
+        working-directory: apps/electron
+        run: |
+          set -euo pipefail
+          for role in old feed; do
+            check_dir="$RUNNER_TEMP/staging-signature-check-$role"
+            mkdir -p "$check_dir"
+            ditto -x -k out/staging-"$role"/*.zip "$check_dir"
+            codesign --verify --deep --strict --verbose=2 "$check_dir/PromaUpdaterTest.app"
+          done
+      - name: 运行真实 staging 安装与重启测试
+        working-directory: apps/electron
+        shell: bash
+        env:
+          PROMA_STAGING_TEST_ACK: isolated-staging-only
+          GH_TOKEN: ''
+          GITHUB_TOKEN: ''
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          FEED_URL: ${{ inputs.staging-feed-url }}
+          START_VERSION: ${{ inputs.start-version }}
+          TARGET_VERSION: ${{ inputs.target-version }}
+        run: |
+          old_package=$(find out/staging-old -maxdepth 1 -type f | head -n 1)
+          args=(normal --old-installer "$old_package" --feed-dir out/staging-feed --staging-url "$FEED_URL" --start-version "$START_VERSION" --target-version "$TARGET_VERSION" --root-parent "$RUNNER_TEMP/proma-updater-tests")
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a bun run scripts/updater-test/run.ts "${args[@]}"
+          else
+            bun run scripts/updater-test/run.ts "${args[@]}"
+          fi
+      - name: 上传 staging 报告与日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-staging-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            ${{ runner.temp }}/proma-updater-tests/**/*.json
+            ${{ runner.temp }}/proma-updater-tests/**/*.jsonl
+            ${{ runner.temp }}/proma-updater-tests/**/*.log
+          if-no-files-found: error

@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["bun", "node"],
+    "noEmit": true
+  },
+  "include": ["scripts/updater-test/**/*.ts", "src/main/lib/updater/**/*.ts", "src/main/lib/safe-file.ts", "src/main/lib/fs-retry.ts"]
+}

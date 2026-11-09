@@ -2,11 +2,14 @@ import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, screen, shell 
 import { join } from 'path'
 import { pathToFileURL } from 'url'
 import { existsSync } from 'fs'
+import { createUpdaterTestHarness, isolateUpdaterTestProcess, isUpdaterTestEnabled } from './lib/updater/update-test-harness'
 
-// Dev 与正式版使用独立的 userData 目录，避免共享 Chromium SingletonLock 导致 dev 启动被静默退出
-// 必须在任何会读取 userData 路径的模块加载之前执行
+// 打包测试实例先隔离数据目录，再获取独立单实例锁。
+isolateUpdaterTestProcess()
+
+// Dev 与正式版使用独立的 userData 目录，避免共享 Chromium SingletonLock。
+// 更新测试已在上方使用控制器分配的目录，不再回退到正式用户目录。
 if (!app.isPackaged) {
-  // 多个 worktree 可显式隔离开发实例，避免其中一个分支抢走另一分支的 Chromium SingletonLock。
   const instance = process.env.PROMA_DEV_INSTANCE?.replace(/[^a-zA-Z0-9_-]/g, '')
   if (instance) app.setName(`pi-agent-${instance}`)
   app.setPath('userData', join(app.getPath('appData'), instance ? `@proma/electron-dev-${instance}` : '@proma/electron-dev'))
@@ -711,8 +714,14 @@ function sendToMainWindow(channel: string, data?: unknown): void {
   }
 }
 
-app.whenReady().then(bootstrap).catch(handleBootstrapFailure)
+app.whenReady().then(isUpdaterTestEnabled() ? bootstrapUpdaterTest : bootstrap).catch(handleBootstrapFailure)
 
+/** 只启动真实 updater 与受限外部命令桥，不加载账号、工作区或其他业务服务。 */
+async function bootstrapUpdaterTest(): Promise<void> {
+  if (process.env.PROMA_UPDATE_TEST_STARTUP_FAILURE === '1') app.exit(23)
+  const testWindow = new BrowserWindow({ show: false, webPreferences: { sandbox: true } })
+  createUpdaterTestHarness(testWindow)
+}
 /**
  * 启动主流程。所有非关键步骤用 safeRun / safeAwait 隔离，
  * 单点失败不应阻止窗口和托盘的创建（用户至少要能看到界面）。

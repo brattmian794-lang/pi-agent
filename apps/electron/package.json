@@ -1,6 +1,6 @@
 {
   "name": "@proma/electron",
-  "version": "0.19.70-beta.13",
+  "version": "0.19.70-beta.14",
   "description": "pi-agent，本地优先的开源 AI 桌面 Agent",
   "main": "dist/main.cjs",
   "author": {
@@ -47,7 +47,11 @@
     "dist:linux": "bun run build && bun run sync:runtime-deps && bun run rebuild:node-pty && electron-builder --linux",
     "dist:visual": "bun run scripts/dist.ts",
     "dist:fast": "bun run scripts/dist.ts --current-arch --dmg",
-    "dist:debug": "bun run scripts/dist.ts --current-arch --verbose"
+    "dist:debug": "bun run scripts/dist.ts --current-arch --verbose",
+    "test:updater": "bun test scripts/updater-test src/main/lib/updater/idle-install-scheduler.test.ts",
+    "typecheck:updater": "tsc -p tsconfig.updater-test.json",
+    "updater:fixtures": "bun run scripts/updater-test/build-fixtures.ts",
+    "updater:run": "bun run scripts/updater-test/run.ts"
   },
   "dependencies": {
     "@codemirror/language": "^6.12.4",
