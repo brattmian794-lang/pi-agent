@@ -383,18 +383,14 @@ export class AgentOrchestrator {
       const title = await fetchTitle(request, providerAdapter, fetchFn)
       const result = title ? sanitizeGeneratedTitle(title) : null
       if (!result) {
-        console.warn('[Agent 标题生成] API 未返回可用标题')
-        // 自定义渠道（custom）可能返回空/异常；任何取不到可用标题的情况
-        // 都回退到首行兜底，保证会话一定被重命名。
-        return (channel.provider === 'custom') ? createFallbackTitle(userMessage) : null
+        console.warn('[Agent 标题生成] API 未返回可用标题，使用本地兜底')
+        return createFallbackTitle(userMessage)
       }
-
       console.log(`[Agent 标题生成] 生成标题成功: "${result}"`)
       return result
     } catch (error) {
-      console.warn('[Agent 标题生成] 生成失败:', error)
-      // 自定义渠道的服务端偶发返回空标题/异常响应/超时，异常路径同样要完成重命名。
-      return (channel.provider === 'custom') ? createFallbackTitle(userMessage) : null
+      console.warn('[Agent 标题生成] 生成失败，使用本地兜底:', error)
+      return createFallbackTitle(userMessage)
     }
   }
 
