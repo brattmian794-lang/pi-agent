@@ -1,6 +1,6 @@
 {
   "name": "@proma/core",
-  "version": "0.2.19",
+  "version": "0.2.20",
   "license": "AGPL-3.0-only",
   "description": "pi-agent core types, storage and agent logic",
   "type": "module",

@@ -22,6 +22,7 @@ import type {
   ContinuationMessage,
 } from './types.ts'
 import { resolveOpenAIChatCompletionsUrl } from './url-utils.ts'
+import { extractFinalTitleText } from './title-text.ts'
 
 // ===== OpenAI 特有类型 =====
 
@@ -66,7 +67,7 @@ interface OpenAIChunkData {
 
 /** OpenAI 标题响应 */
 interface OpenAITitleResponse {
-  choices?: Array<{ message?: { content?: string } }>
+  choices?: Array<{ finish_reason?: string; message?: { content?: unknown } }>
 }
 
 // ===== 消息转换 =====
@@ -291,7 +292,9 @@ export class OpenAIAdapter implements ProviderAdapter {
   }
 
   parseTitleResponse(responseBody: unknown): string | null {
-    const data = responseBody as OpenAITitleResponse
-    return data.choices?.[0]?.message?.content ?? null
+    const data = responseBody as OpenAITitleResponse | null | undefined
+    const choice = Array.isArray(data?.choices) ? data.choices[0] : undefined
+    if (choice?.finish_reason === 'length') return null
+    return extractFinalTitleText(choice?.message?.content)
   }
 }

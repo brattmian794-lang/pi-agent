@@ -79,6 +79,7 @@ import { resolvePiThinkingLevel } from './agent-thinking-level'
 import { resolvePiReasoningCapability } from './adapters/pi-model-registry'
 import { generateCodexTitle } from './adapters/pi-codex-title-generator'
 import { createFallbackTitle, sanitizeGeneratedTitle, TITLE_PROMPT } from './title-generation'
+import { autoGenerateSessionTitle } from './auto-title-generation'
 import { claimWorkspaceMemoryRefreshOpportunity } from './agent-memory-refresh-service'
 import { browserController } from './browser-controller'
 import { resolveRuntimeAdditionalDirectories } from './agent-orchestrator-vault-access'
@@ -138,9 +139,6 @@ function isAssistantDeltaSDKMessage(message: SDKMessage): message is SDKMessage 
     && typeof record.uuid === 'string'
     && !!record.delta
 }
-
-/** 默认会话标题（用于判断是否需要自动生成） */
-const DEFAULT_SESSION_TITLE = '新 Agent 会话'
 
 /** 默认模型 ID */
 const DEFAULT_MODEL_ID = 'claude-sonnet-5'
@@ -408,45 +406,12 @@ export class AgentOrchestrator {
     callbacks: SessionCallbacks,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (signal?.aborted) return
-    try {
-      const meta = getAgentSessionMeta(sessionId)
-      if (!meta) return
-      const isDefaultSessionTitle = meta.title === DEFAULT_SESSION_TITLE
-      const isFirstExplorationMessage = Boolean(
-        meta.explorationParentSessionId
-        && !meta.explorationTitleInitializedAt,
-      )
-      if (!isDefaultSessionTitle && !isFirstExplorationMessage) return
-
-      // 分支的历史被 Pi fork 复制，不能按「第一条历史消息」命名；以首次继续发送的消息
-      // 作为唯一的命名信号。先持久化守卫，避免用户连发时启动多个竞争标题请求。
-      const explorationTitleInitializedAt = isFirstExplorationMessage ? Date.now() : undefined
-      if (explorationTitleInitializedAt) {
-        updateAgentSessionMeta(sessionId, { explorationTitleInitializedAt })
-      }
-
-      const title = await this.generateTitle({ userMessage, channelId, modelId }, signal)
-        ?? (isFirstExplorationMessage ? createFallbackTitle(userMessage) : null)
-      if (!title || signal?.aborted) return
-
-      // 标题请求是异步的；请求期间用户可能已手动重命名，不能用旧结果覆盖。
-      const latestMeta = getAgentSessionMeta(sessionId)
-      const canApplyDefaultTitle = isDefaultSessionTitle && latestMeta?.title === DEFAULT_SESSION_TITLE
-      const canApplyExplorationTitle = Boolean(
-        isFirstExplorationMessage
-        && latestMeta?.title === meta.title
-        && latestMeta.explorationTitleInitializedAt === explorationTitleInitializedAt,
-      )
-      if (!latestMeta || (!canApplyDefaultTitle && !canApplyExplorationTitle)) return
-
-      updateAgentSessionMeta(sessionId, { title })
-      callbacks.onTitleUpdated(title)
-      console.log(`[Agent 编排] 自动标题生成完成: "${title}"`)
-    } catch (error) {
-      if (signal?.aborted) return
-      console.warn('[Agent 编排] 自动标题生成失败:', error)
-    }
+    return autoGenerateSessionTitle(userMessage, {
+      getSessionMeta: () => getAgentSessionMeta(sessionId),
+      updateSessionMeta: (updates) => { updateAgentSessionMeta(sessionId, updates) },
+      generateTitle: () => this.generateTitle({ userMessage, channelId, modelId }, signal),
+      onTitleUpdated: (title) => callbacks.onTitleUpdated(title),
+    }, signal)
   }
 
   /**

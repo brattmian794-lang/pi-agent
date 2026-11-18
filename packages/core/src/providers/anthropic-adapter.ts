@@ -38,6 +38,7 @@ import type {
 import { resolveAnthropicMessagesUrl } from './url-utils.ts'
 import { detectThinkingCapability } from './thinking-capability.ts'
 import { getPromaUserAgent } from './user-agent.ts'
+import { extractFinalTitleText } from './title-text.ts'
 
 // ===== Anthropic 特有类型 =====
 
@@ -96,11 +97,8 @@ interface AnthropicSSEEvent {
 
 /** Anthropic 标题响应 */
 interface AnthropicTitleResponse {
-  content?: Array<{
-    type: string
-    text?: string
-    thinking?: string
-  }>
+  stop_reason?: string
+  content?: unknown
 }
 
 // ===== 消息转换 =====
@@ -454,7 +452,8 @@ export class AnthropicAdapter implements ProviderAdapter {
 
     const body: Record<string, unknown> = {
       model: input.modelId,
-      max_tokens: 50,
+      // 兼容端点可能先消耗推理 token，为最终短标题留出输出空间。
+      max_tokens: 1024,
       messages: [{ role: 'user', content: input.prompt }],
     }
 
@@ -473,27 +472,8 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   parseTitleResponse(responseBody: unknown): string | null {
-    const data = responseBody as AnthropicTitleResponse
-    if (!data.content || data.content.length === 0) return null
-
-    // 优先查找 type === "text" 的块
-    const textBlock = data.content.find((block) => block.type === 'text')
-    if (textBlock?.text) return textBlock.text
-
-    // 如果没有 text 块，尝试从第一个 thinking 块中提取（MiniMax 兼容）
-    const thinkingBlock = data.content.find((block) => block.type === 'thinking')
-    if (thinkingBlock?.thinking) {
-      // thinking 内容可能很长，尝试提取最后一行或关键部分
-      const lines = thinkingBlock.thinking.trim().split('\n')
-      const lastLine = lines[lines.length - 1]?.trim()
-      // 如果最后一行以 "- " 开头，提取它（常见的标题格式）
-      if (lastLine?.startsWith('- ')) {
-        return lastLine.slice(2).trim()
-      }
-      // 否则返回最后一行
-      return lastLine || null
-    }
-
-    return null
+    const data = responseBody as AnthropicTitleResponse | null | undefined
+    if (data?.stop_reason === 'max_tokens') return null
+    return extractFinalTitleText(data?.content)
   }
 }

@@ -22,6 +22,7 @@ import type {
 } from './types.ts'
 import { getGeminiModelCapability, normalizeGeminiThinkingLevel } from '@proma/shared'
 import { normalizeBaseUrl } from './url-utils.ts'
+import { extractFinalTitleText } from './title-text.ts'
 
 // ===== Google 特有类型 =====
 
@@ -65,8 +66,9 @@ interface GoogleStreamData {
 /** Google 标题响应 */
 interface GoogleTitleResponse {
   candidates?: Array<{
+    finishReason?: string
     content?: {
-      parts?: Array<{ text?: string }>
+      parts?: GooglePart[]
     }
   }>
 }
@@ -315,13 +317,19 @@ export class GoogleAdapter implements ProviderAdapter {
       },
       body: JSON.stringify({
         contents: [{ role: 'user', parts: [{ text: input.prompt }] }],
-        generationConfig: { maxOutputTokens: 50 },
+        generationConfig: { maxOutputTokens: 1024 },
       }),
     }
   }
 
   parseTitleResponse(responseBody: unknown): string | null {
-    const data = responseBody as GoogleTitleResponse
-    return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null
+    const data = responseBody as GoogleTitleResponse | null | undefined
+    const candidate = Array.isArray(data?.candidates) ? data.candidates[0] : undefined
+    if (candidate?.finishReason && candidate.finishReason !== 'STOP') return null
+    const parts = candidate?.content?.parts
+    if (!Array.isArray(parts)) return null
+    return extractFinalTitleText(parts
+      .filter((part) => part && !part.thought && !part.functionCall && !part.functionResponse && !part.inline_data)
+      .map((part) => ({ type: 'text', text: part.text })))
   }
 }

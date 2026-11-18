@@ -18,6 +18,7 @@ import type {
   ToolDefinition,
 } from './types.ts'
 import { resolveOpenAIResponsesUrl } from './url-utils.ts'
+import { extractFinalTitleText } from './title-text.ts'
 
 // ===== Responses API 类型（只声明 Proma 需要的字段） =====
 
@@ -68,6 +69,7 @@ interface ResponsesTool {
 
 interface ResponsesStreamItem {
   type?: string
+  role?: string
   id?: string
   call_id?: string
   name?: string
@@ -93,6 +95,7 @@ interface ResponsesStreamData {
 }
 
 interface ResponsesTitleResponse {
+  status?: string
   output_text?: string
   output?: ResponsesStreamItem[]
 }
@@ -388,13 +391,22 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
       body: JSON.stringify({
         model: input.modelId,
         input: [{ role: 'user', content: input.prompt }],
-        max_output_tokens: 50,
+        // 部分推理模型的预算同时包含推理与最终文本。
+        max_output_tokens: 1024,
       }),
     }
   }
 
   parseTitleResponse(responseBody: unknown): string | null {
-    const data = responseBody as ResponsesTitleResponse
-    return data.output_text?.trim() || collectOutputText(data.output) || null
+    const data = responseBody as ResponsesTitleResponse | null | undefined
+    if (data?.status && data.status !== 'completed') return null
+    const outputText = extractFinalTitleText(data?.output_text)
+    if (outputText) return outputText
+    if (!Array.isArray(data?.output)) return null
+    const content = data.output
+      .filter((item) => item?.type === 'message' && (!item.role || item.role === 'assistant'))
+      .flatMap((item) => Array.isArray(item.content) ? item.content : [])
+      .filter((part) => part?.type === 'output_text')
+    return extractFinalTitleText(content)
   }
 }
