@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { chmodSync, closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { writeJsonFileAtomic } from '../../src/main/lib/safe-file'
@@ -56,6 +56,32 @@ export interface ControllerOptions {
   startupFailure?: boolean
 }
 
+/** 安装器和应用使用同一白名单，防止初装/自动重启落入普通用户配置。 */
+export function createUpdaterTestEnvironment(root: string, feedUrl: string, inherited: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return {
+    PATH: inherited.PATH,
+    SystemRoot: inherited.SystemRoot,
+    ComSpec: inherited.ComSpec,
+    DISPLAY: inherited.DISPLAY,
+    XAUTHORITY: inherited.XAUTHORITY,
+    WAYLAND_DISPLAY: inherited.WAYLAND_DISPLAY,
+    XDG_RUNTIME_DIR: inherited.XDG_RUNTIME_DIR,
+    HOME: join(root, 'home'),
+    USERPROFILE: join(root, 'home'),
+    APPDATA: join(root, 'app-data'),
+    LOCALAPPDATA: join(root, 'local-app-data'),
+    XDG_CONFIG_HOME: join(root, 'xdg-config'),
+    XDG_CACHE_HOME: join(root, 'xdg-cache'),
+    TEMP: join(root, 'temp'),
+    TMP: join(root, 'temp'),
+    PROMA_UPDATE_TEST_ROOT: root,
+    PROMA_UPDATE_TEST_FEED_URL: feedUrl,
+    PROMA_AGENT_RUNTIME: 'off',
+    ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
+    APPIMAGE_EXTRACT_AND_RUN: process.platform === 'linux' ? '1' : undefined,
+  }
+}
+
 /** 父进程控制器：安装退出之后仍能读取状态、日志并启动新的测试进程。 */
 export class UpdaterInstanceController {
   private child: ChildProcess | null = null
@@ -66,27 +92,7 @@ export class UpdaterInstanceController {
     const descriptor = openSync(logPath, 'a', 0o600)
     const root = realpathSync(this.options.root)
     const environment: NodeJS.ProcessEnv = {
-      PATH: process.env.PATH,
-      SystemRoot: process.env.SystemRoot,
-      ComSpec: process.env.ComSpec,
-      // 只传递测试 GUI 所需的显示环境，不继承用户凭据。
-      DISPLAY: process.env.DISPLAY,
-      XAUTHORITY: process.env.XAUTHORITY,
-      WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY,
-      XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
-      HOME: join(root, 'home'),
-      USERPROFILE: join(root, 'home'),
-      APPDATA: join(root, 'app-data'),
-      LOCALAPPDATA: join(root, 'local-app-data'),
-      XDG_CONFIG_HOME: join(root, 'xdg-config'),
-      XDG_CACHE_HOME: join(root, 'xdg-cache'),
-      TEMP: join(root, 'temp'),
-      TMP: join(root, 'temp'),
-      PROMA_UPDATE_TEST_ROOT: root,
-      PROMA_UPDATE_TEST_FEED_URL: this.options.feedUrl,
-      PROMA_AGENT_RUNTIME: 'off',
-      ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
-      APPIMAGE_EXTRACT_AND_RUN: process.platform === 'linux' ? '1' : undefined,
+      ...createUpdaterTestEnvironment(root, this.options.feedUrl),
       ...(this.options.fault ? { PROMA_UPDATE_TEST_FAULT: this.options.fault } : {}),
       ...(this.options.requireSignature ? { PROMA_UPDATE_TEST_REQUIRE_SIGNATURE: '1' } : {}),
       ...(this.options.startupFailure ? { PROMA_UPDATE_TEST_STARTUP_FAILURE: '1' } : {}),
@@ -110,7 +116,7 @@ export class UpdaterInstanceController {
     return waitFor(() => {
       const state = this.readState(false)
       return state && state.pid === child.pid ? state : null
-    }, '测试实例报告启动版本')
+    }, '测试实例报告启动版本', 180_000)
   }
 
   get executable(): string { return this.options.executable }
@@ -156,26 +162,20 @@ export function findFile(root: string, extension: string): string {
   throw new Error(`未找到 ${extension} 测试工件：${root}`)
 }
 
-export async function installOldVersion(installer: string, root: string): Promise<string> {
+export async function installOldVersion(installer: string, root: string, feedUrl = 'http://127.0.0.1:9'): Promise<string> {
   const install = join(root, 'install')
   mkdirSync(install, { recursive: true })
   if (process.platform === 'win32') {
-    // 连续场景可能遇到 NSIS 旧测试安装卸载失败（退出码 2），只对此做有限重试。
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const descriptor = openSync(join(root, 'logs', 'initial-installer.log'), 'a', 0o600)
-      const child = spawn(installer, ['/S', `/D=${install}`], { stdio: ['ignore', descriptor, descriptor], windowsHide: true })
-      closeSync(descriptor)
-      const exitCode = await new Promise<number | null>((resolveInstall, reject) => {
-        const timer = setTimeout(() => { child.kill(); reject(new Error('旧版安装超时')) }, 240_000)
-        child.once('error', (error) => { clearTimeout(timer); reject(error) })
-        child.once('exit', (code) => { clearTimeout(timer); resolveInstall(code) })
-      })
-      if (exitCode === 0) return join(install, 'PromaUpdaterTest.exe')
-      if (exitCode !== 2 || attempt === 2) throw new Error(`旧版安装退出码：${exitCode}`)
-      console.warn(`[更新测试] 旧测试安装卸载失败，稍后重试（${attempt + 1}/2）`)
-      await delay(2_000)
+    // 直接复制当前构建的旧版应用；前置安装旧 NSIS 包会复用 Windows 全局测试注册项。
+    const unpackedDirectory = join(dirname(installer), 'win-unpacked')
+    const unpackedExecutable = join(unpackedDirectory, 'PromaUpdaterTest.exe')
+    if (!existsSync(unpackedExecutable) || !lstatSync(unpackedExecutable).isFile()) {
+      throw new Error(`缺少 Windows unpacked 测试应用：${unpackedExecutable}`)
     }
-    throw new Error('旧版安装未完成')
+    cpSync(unpackedDirectory, install, { recursive: true, force: true })
+    const installedExecutable = join(install, 'PromaUpdaterTest.exe')
+    if (!existsSync(installedExecutable)) throw new Error('隔离旧版应用复制后缺少可执行文件')
+    return installedExecutable
   }
   if (process.platform === 'darwin') {
     const result = spawn('ditto', ['-x', '-k', installer, install], { stdio: 'inherit' })

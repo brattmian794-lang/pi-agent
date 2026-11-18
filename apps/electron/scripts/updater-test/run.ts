@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { extractFile } from '@electron/asar'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { createOwnedTestRoot, findFile, installOldVersion, removeOwnedTestRoot, UpdaterInstanceController, waitFor, writeCommand } from './controller'
 import { LocalUpdateFeed, prepareNoUpdateFeed, sha256File } from './local-feed'
 import { writeJsonFileAtomic } from '../../src/main/lib/safe-file'
@@ -24,7 +25,7 @@ function step(report: UpdaterTestReport, name: string, detail?: string): void {
 
 async function stopObserved(root: string, currentPid: number): Promise<void> {
   writeCommand(root, 'shutdown')
-  const deadline = Date.now() + 10_000
+  const deadline = Date.now() + 60_000
   while (Date.now() < deadline) {
     try { process.kill(currentPid, 0) } catch { return }
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 100))
@@ -76,10 +77,12 @@ async function runScenario(scenario: UpdaterTestScenario): Promise<UpdaterTestRe
   try {
     await feed.start()
     if (scenario === 'offline') await feed.close()
+    const feedUrl = argument('staging-url') ?? feed.url
+    if (process.platform === 'win32') writeJsonFileAtomic(join(root, 'relaunch.json'), { feedUrl })
     const controller = new UpdaterInstanceController({
       root,
-      feedUrl: argument('staging-url') ?? feed.url,
-      executable: await installOldVersion(oldInstaller, root),
+      feedUrl,
+      executable: await installOldVersion(oldInstaller, root, feedUrl),
       ...(scenario === 'disk-full' ? { fault: 'disk-full' as const } : {}),
       ...(scenario === 'invalid-signature' ? { requireSignature: true } : {}),
     }, report)
@@ -97,6 +100,8 @@ async function runScenario(scenario: UpdaterTestScenario): Promise<UpdaterTestRe
       step(report, `${scenario} 故障被拒绝`, error)
       if (scenario === 'invalid-signature' && !/sha512|checksum|签名|signature|signed/i.test(error)) throw new Error(`签名校验错误不符合预期：${error}`)
       if (scenario === 'disk-full' && !error.includes('ENOSPC')) throw new Error('磁盘不足未呈现 ENOSPC')
+      await observeRunningInstance(controller, started.pid, false)
+      if (controller.readState().updateStatus.status !== 'error') throw new Error('下载失败后更新状态异常')
     } else if (scenario === 'no-update') {
       await waitFor(() => controller.readState(false)?.updateStatus.status === 'not-available' ? true : null, '无新版状态')
       step(report, '无新版不被安装')
@@ -105,6 +110,7 @@ async function runScenario(scenario: UpdaterTestScenario): Promise<UpdaterTestRe
         const status = controller.readState(false)?.updateStatus
         return status?.status === 'downloaded' ? status : null
       }, '更新包下载与校验完成', 180_000)
+      if (downloaded.version !== targetVersion) throw new Error(`下载版本不符：${downloaded.version}`)
       step(report, '真实 electron-updater 下载完成', `v${downloaded.version}`)
       const cacheRoot = process.platform === 'win32' ? join(root, 'local-app-data') : process.platform === 'darwin' ? join(root, 'home', 'Library', 'Caches') : join(root, 'xdg-cache')
       const cachedPackage = findFile(cacheRoot, process.platform === 'win32' ? '.exe' : process.platform === 'darwin' ? '.zip' : '.AppImage')
@@ -146,28 +152,17 @@ async function runScenario(scenario: UpdaterTestScenario): Promise<UpdaterTestRe
         controller.command('install-when-idle')
       }
 
-      if (scenario !== 'cancel-install') {
+      if (scenario !== 'cancel-install' && scenario !== 'cleanup') {
         const updatedExecutable = process.platform === 'linux' ? join(root, 'install', newPackage.split(/[\\/]/).pop() ?? '') : controller.executable
         const restarted = await waitFor(() => {
           const state = controller.readState(false)
-          return state?.version === targetVersion && state.pid !== started.pid ? state : null
-        }, '安装器自动拉起新版', scenario === 'install-failure' ? 15_000 : 10_000).catch(async (error: unknown) => {
+          return state?.version === targetVersion && state.pid !== started.pid && state.rendererUrl ? state : null
+        }, '安装器自动拉起新版并加载渲染入口', scenario === 'install-failure' ? 15_000 : process.platform === 'win32' ? 240_000 : 10_000).catch(async (error: unknown) => {
           if (scenario === 'install-failure') return null
-          if (process.platform !== 'win32') {
-            const executable = updatedExecutable
-            await waitFor(() => existsSync(executable) ? true : null, '安装后的测试工件', 120_000)
-            const supervisor = new UpdaterInstanceController({ root, feedUrl: feed.url, executable }, report)
-            return supervisor.start()
-          }
-          // 安装器负责退出与替换文件，父进程负责确认包版本并监督新版启动。
-          await waitFor(() => {
-            try {
-              const metadata = JSON.parse(extractFile(join(root, 'install', 'resources', 'app.asar'), 'package.json').toString('utf8')) as { version?: string }
-              return metadata.version === targetVersion ? true : null
-            } catch { return null }
-          }, '安装目录中的新版 ASAR', 120_000)
-          step(report, '安装目录已替换为目标版本', targetVersion)
-          return controller.start()
+          if (process.platform === 'win32') throw error
+          await waitFor(() => existsSync(updatedExecutable) ? true : null, '安装后的测试工件', 120_000)
+          const supervisor = new UpdaterInstanceController({ root, feedUrl, executable: updatedExecutable }, report)
+          return supervisor.start()
         })
         if (scenario === 'install-failure') {
           if (restarted) throw new Error('损坏安装器不应完成升级')
@@ -179,8 +174,22 @@ async function runScenario(scenario: UpdaterTestScenario): Promise<UpdaterTestRe
           if (!restarted) throw new Error('新版启动状态缺失')
           if (restarted.version !== targetVersion) throw new Error(`重启版本不符：期望 ${targetVersion}，实际 ${restarted.version}`)
           if (restarted.pid === started.pid) throw new Error('更新后仍报告旧实例 PID')
+          if (process.platform === 'win32') {
+            if (!report.exits.some(({ pid, code }) => pid === started.pid && code === 0)) throw new Error('未观察到旧进程正常退出')
+            const asarPath = join(root, 'install', 'resources', 'app.asar')
+            const expectedUrl = pathToFileURL(join(asarPath, 'dist', 'renderer', 'index.html')).href
+            if (restarted.exePath !== updatedExecutable || restarted.appPath !== asarPath || restarted.rendererUrl !== expectedUrl) {
+              throw new Error(`新版进程或渲染资源不在预期安装目录：${JSON.stringify(restarted)}`)
+            }
+            const metadata = JSON.parse(extractFile(asarPath, 'package.json').toString('utf8')) as { version?: string }
+            if (metadata.version !== targetVersion) throw new Error(`安装目录 ASAR 版本不符：${metadata.version}`)
+            step(report, '安装器自动重启并加载新版渲染入口', `旧 PID ${started.pid}，新 PID ${restarted.pid}，v${restarted.version}，${restarted.exePath}，${restarted.rendererUrl}`)
+            await waitFor(() => existsSync(cachedPackage) ? null : true, '新版稳定启动后清理更新缓存', 25_000)
+            step(report, '新版稳定启动后已回收安装包')
+          } else {
+            step(report, '安装退出并由外部控制器确认新版', `v${restarted.version}，PID ${restarted.pid}`)
+          }
           report.restartedVersion = restarted.version
-          step(report, '安装退出并由外部控制器确认新版', `v${restarted.version}，PID ${restarted.pid}`)
           if (scenario === 'startup-recovery') {
             await stopObserved(root, restarted.pid)
             const failing = new UpdaterInstanceController({ root, feedUrl: feed.url, executable: updatedExecutable, startupFailure: true }, report)

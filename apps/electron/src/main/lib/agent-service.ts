@@ -637,8 +637,8 @@ export function getAgentBackgroundCommandDetails(sessionId: string, commandId: s
   return backgroundCommands.details(sessionId, commandId)
 }
 
-export async function shutdownAgentBackgroundCommands(): Promise<void> {
-  await backgroundCommands.shutdown()
+export async function shutdownAgentBackgroundCommands(permanent = true): Promise<void> {
+  await backgroundCommands.shutdown(permanent)
 }
 
 export function listQueuedAgentMessages(sessionId: string): AgentQueuedMessageSnapshot[] {

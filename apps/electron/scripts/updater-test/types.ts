@@ -37,6 +37,9 @@ export interface InstanceState {
   updatedAt: string
   agentActive: boolean
   updateStatus: UpdateStatus
+  exePath: string
+  appPath: string
+  rendererUrl?: string
   lastCommand?: string
   error?: string
 }

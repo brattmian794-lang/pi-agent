@@ -5,9 +5,10 @@
 import { app } from 'electron'
 import type { BrowserWindow } from 'electron'
 import type { NsisUpdater } from 'electron-updater'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { autoUpdater } from 'electron-updater'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { isUpdaterTestBuildMetadata, resolveUpdaterTestFeedUrl } from './update-test-config'
 import { writeJsonFileAtomic } from '../safe-file'
 import type { UpdateStatus } from './updater-types'
@@ -23,12 +24,15 @@ export interface UpdaterTestState {
   updatedAt: string
   agentActive: boolean
   updateStatus: UpdateStatus
+  exePath: string
+  appPath: string
+  rendererUrl?: string
   lastCommand?: string
   error?: string
 }
 
-export function isUpdaterTestEnabled(environment: NodeJS.ProcessEnv = process.env): boolean {
-  if (!app.isPackaged || !environment.PROMA_UPDATE_TEST_ROOT) return false
+export function isUpdaterTestEnabled(): boolean {
+  if (!app.isPackaged) return false
   try {
     const metadata: unknown = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8'))
     return isUpdaterTestBuildMetadata(metadata)
@@ -37,15 +41,30 @@ export function isUpdaterTestEnabled(environment: NodeJS.ProcessEnv = process.en
   }
 }
 
+/** NSIS 可经 Explorer 启动新版，因此重启时不能依赖旧进程的环境变量。 */
+function restoreWindowsTestContext(): void {
+  if (process.platform !== 'win32' || !process.argv.includes('--updated')) return
+  const install = dirname(realpathSync(app.getPath('exe')))
+  if (basename(install) !== 'install') return
+  const root = dirname(install)
+  const owner = JSON.parse(readFileSync(join(root, '.proma-updater-test-owned.json'), 'utf8')) as { schemaVersion?: number }
+  if (owner.schemaVersion !== 1) return
+  const context = JSON.parse(readFileSync(join(root, 'relaunch.json'), 'utf8')) as { feedUrl?: string }
+  process.env.PROMA_UPDATE_TEST_FEED_URL = resolveUpdaterTestFeedUrl(context.feedUrl)
+  process.env.PROMA_UPDATE_TEST_ROOT = root
+}
+
 function getTestRoot(): string {
   const root = process.env.PROMA_UPDATE_TEST_ROOT
-  if (!app.isPackaged || !root) throw new Error('更新测试桥只允许显式配置的打包实例')
+  if (!root) throw new Error('更新测试桥只允许显式配置的打包实例')
   return root
 }
 
 /** 由应用入口在任何读取用户配置的模块初始化前调用。 */
 export function isolateUpdaterTestProcess(): void {
   if (!isUpdaterTestEnabled()) return
+  if (!process.env.PROMA_UPDATE_TEST_ROOT) restoreWindowsTestContext()
+  process.env.PROMA_AGENT_RUNTIME = 'off'
   const root = getTestRoot()
   for (const [key, value] of Object.entries({
     HOME: join(root, 'home'),
@@ -62,6 +81,7 @@ export function isolateUpdaterTestProcess(): void {
   for (const key of Object.keys(process.env)) {
     if (/^(ANTHROPIC|OPENAI|GITHUB|GH)_/i.test(key)) delete process.env[key]
   }
+  app.commandLine.appendSwitch('no-proxy-server')
   app.setName(`proma-updater-test-${process.pid}`)
   app.setPath('userData', join(root, 'user-data'))
   app.setPath('cache', join(root, 'cache'))
@@ -70,7 +90,7 @@ export function isolateUpdaterTestProcess(): void {
   app.disableHardwareAcceleration()
 }
 
-export function createUpdaterTestHarness(window: BrowserWindow): { setAgentActive(active: boolean): void; dispose(): void } {
+export function createUpdaterTestHarness(window: BrowserWindow, rendererPath: string): { setAgentActive(active: boolean): void; dispose(): void } {
   const root = getTestRoot()
   const commandsDir = join(root, 'commands')
   const statePath = join(root, 'instance-state.json')
@@ -78,7 +98,11 @@ export function createUpdaterTestHarness(window: BrowserWindow): { setAgentActiv
   const feedUrl = resolveUpdaterTestFeedUrl(process.env.PROMA_UPDATE_TEST_FEED_URL)
   autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl, channel: 'latest' })
   autoUpdater.disableDifferentialDownload = true
-  if (process.platform === 'win32') (autoUpdater as NsisUpdater).installDirectory = dirname(app.getPath('exe'))
+  // 仅专用 updater 测试构建可显式注入签名拒绝；不替代产品/生产 Authenticode 校验。
+  if (process.platform === 'win32' && process.env.PROMA_UPDATE_TEST_FAULT === 'invalid-signature') {
+    (autoUpdater as NsisUpdater).verifyUpdateCodeSignature = async (publisherNames, filePath) =>
+      `publisherNames: ${publisherNames.join(' | ')}, raw info: ${JSON.stringify({ Status: 2, StatusMessage: 'Injected unsigned test installer', Path: filePath })}`
+  }
   if (process.env.PROMA_UPDATE_TEST_REQUIRE_SIGNATURE === '1') {
     const configPath = join(root, 'test-app-update.yml')
     writeFileSync(configPath, `provider: generic\nurl: ${feedUrl}\nchannel: latest\nupdaterCacheDirName: proma-updater-test\npublisherName: Proma Updater Test Only\n`, 'utf8')
@@ -92,6 +116,8 @@ export function createUpdaterTestHarness(window: BrowserWindow): { setAgentActiv
     schemaVersion: 1,
     version: app.getVersion(),
     pid: process.pid,
+    exePath: app.getPath('exe'),
+    appPath: app.getAppPath(),
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     agentActive,
@@ -105,6 +131,12 @@ export function createUpdaterTestHarness(window: BrowserWindow): { setAgentActiv
     appendFileSync(join(root, 'events.jsonl'), `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, version: app.getVersion(), name, detail })}\n`, 'utf8')
     report()
   }
+  const rendererUrl = pathToFileURL(rendererPath).href
+  window.webContents.on('did-finish-load', () => {
+    if (window.webContents.getURL() !== rendererUrl) return
+    state.rendererUrl = rendererUrl
+    event('renderer-loaded', rendererUrl)
+  })
   configureUpdater(window, { hasActiveAgents: () => agentActive })
   initAutoUpdater(window)
   report()

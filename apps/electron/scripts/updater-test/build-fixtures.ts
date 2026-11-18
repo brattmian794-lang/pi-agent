@@ -15,8 +15,8 @@ function argument(name: string, fallback: string): string {
 /** 专用测试版本：独立 appId/产品名，只输出本地工件，永远不发布。 */
 const version = argument('version', '0.19.0-test.1')
 const role = argument('role', 'old')
+const appId = argument('app-id', 'com.proma.updater.test.batch1')
 const output = resolve(argument('output', join('out', 'updater-test-fixtures', role)))
-mkdirSync(output, { recursive: true })
 const current = process.platform === 'win32' ? Platform.WINDOWS : process.platform === 'darwin' ? Platform.MAC : Platform.LINUX
 const target = process.platform === 'win32' ? 'nsis' : process.platform === 'darwin' ? 'zip' : 'AppImage'
 const baseConfig = load(readFileSync(join(process.cwd(), 'electron-builder.yml'), 'utf8')) as Configuration
@@ -26,13 +26,13 @@ await build({
   config: {
     ...baseConfig,
     extends: null,
-    appId: 'com.proma.updater.test',
+    appId,
     productName: 'PromaUpdaterTest',
     extraMetadata: { version, proma: { updaterTest: true } },
     directories: { output },
     publish: { provider: 'generic', url: 'http://127.0.0.1:9', channel: 'latest' },
     win: { target: ['nsis'], ...(process.env.PROMA_STAGING_SIGN === '1' ? {} : { signAndEditExecutable: false }) },
-    nsis: { oneClick: true, perMachine: false, allowElevation: false, createDesktopShortcut: false, createStartMenuShortcut: false, runAfterFinish: true },
+    nsis: { ...baseConfig.nsis, perMachine: false, allowElevation: false, createDesktopShortcut: false, createStartMenuShortcut: false, runAfterFinish: false },
     mac: { target: ['zip'] },
     linux: { target: ['AppImage'], executableName: 'PromaUpdaterTest' },
     forceCodeSigning: process.env.PROMA_STAGING_SIGN === '1',

@@ -151,6 +151,10 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
+  # 直接解包到目标目录，避开静默安装中经由系统 Shell 复制临时目录的路径。
+  useZip: true
+  differentialPackage: false
+  include: resources/windows/installer.nsh
   createStartMenuShortcut: true
 
 # ============================================

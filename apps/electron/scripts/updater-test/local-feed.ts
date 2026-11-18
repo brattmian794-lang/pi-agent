@@ -18,6 +18,9 @@ export class LocalUpdateFeed {
     this.server = createServer((request, response) => {
       const pathname = decodeURIComponent(new URL(request.url ?? '/', 'http://localhost').pathname)
       const filename = basename(pathname)
+      console.log(`[updater-test-feed] ${request.method} ${pathname} range=${request.headers.range ?? '-'} from=${request.socket.remoteAddress ?? '-'}`)
+      response.once('finish', () => console.log(`[updater-test-feed] ${filename} response-finish bytes=${response.getHeader('content-length') ?? '-'}`))
+      response.once('close', () => { if (!response.writableFinished) console.warn(`[updater-test-feed] ${filename} response-closed-before-finish`) })
       const filePath = join(this.directory, filename)
       if (!existsSync(filePath) || !statSync(filePath).isFile()) {
         response.writeHead(404).end('not found')
@@ -35,7 +38,8 @@ export class LocalUpdateFeed {
       }
       const content = readFileSync(filePath)
       if (this.invalidSignature && filename.endsWith('.exe')) content[content.length - 1] = (content[content.length - 1] ?? 0) ^ 1
-      response.setHeader('content-length', content.length)
+      const payload = this.fault === 'corrupt' && /\.(exe|zip|AppImage)$/.test(filename) ? Buffer.from('corrupted test package') : content
+      response.setHeader('content-length', payload.length)
       if (this.fault === 'interrupted' && /\.(exe|zip|AppImage)$/.test(filename)) {
         response.writeHead(200)
         response.write(content.subarray(0, Math.min(65536, content.length)))
@@ -43,7 +47,7 @@ export class LocalUpdateFeed {
         return
       }
       response.writeHead(200)
-      response.end(this.fault === 'corrupt' && /\.(exe|zip|AppImage)$/.test(filename) ? Buffer.from('corrupted test package') : content)
+      response.end(payload)
     })
     await new Promise<void>((resolve, reject) => {
       this.server?.once('error', reject)

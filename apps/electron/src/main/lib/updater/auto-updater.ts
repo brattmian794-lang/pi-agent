@@ -6,8 +6,10 @@
  */
 
 import { autoUpdater } from 'electron-updater'
-import { BrowserWindow, app } from 'electron'
-import { join } from 'node:path'
+import type { NsisUpdater } from 'electron-updater'
+import { app } from 'electron'
+import type { BrowserWindow } from 'electron'
+import { dirname, join } from 'node:path'
 import type { UpdateStatus } from './updater-types'
 import { UPDATER_IPC_CHANNELS } from './updater-types'
 import { createIdleInstallScheduler } from './idle-install-scheduler'
@@ -37,6 +39,10 @@ let activeDownloadVersion: string | null = null
 
 /** 由 Agent 服务注入，覆盖所有窗口/后台 Agent 的运行状态。 */
 let hasActiveAgents = (): boolean => false
+let prepareForInstall: (() => Promise<void>) | undefined
+let checkInProgress = false
+let installInProgress = false
+let preparingInstall = false
 
 /** 已安装更新包的延后清理：新版窗口稳定后才执行，避免安装链路中途删包。 */
 const APPLIED_UPDATE_CACHE_CLEANUP_DELAY_MS = 15_000
@@ -50,11 +56,9 @@ const APPLIED_UPDATE_CACHE_CLEANUP_MAX_RETRIES = 2
  * 状态检查留在主进程，避免渲染进程漏掉后台运行或其他窗口中的 Agent。
  */
 const idleInstallScheduler = createIdleInstallScheduler({
-  canInstall: () => currentStatus.status === 'downloaded' && !hasActiveAgents(),
-  install: () => {
-    console.log('[更新] 当前没有运行中的 Agent，开始安装已下载更新')
-    quitAndInstall()
-  },
+  canInstall: () => currentStatus.status === 'downloaded' && !hasActiveAgents()
+    && !checkInProgress && !preparingInstall && !installInProgress,
+  install: () => { setImmediate(() => { void quitAndInstall() }) },
 })
 
 /** 更新状态并推送给渲染进程 */
@@ -63,7 +67,9 @@ function setStatus(status: UpdateStatus): void {
   if (status.status !== 'downloaded') {
     idleInstallScheduler.cancel()
   }
-  win?.webContents?.send(UPDATER_IPC_CHANNELS.ON_STATUS_CHANGED, status)
+  if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+    win.webContents.send(UPDATER_IPC_CHANNELS.ON_STATUS_CHANGED, status)
+  }
 }
 
 /**
@@ -95,9 +101,10 @@ function downloadAvailableUpdate(): void {
  */
 export function configureUpdater(
   mainWindow: BrowserWindow,
-  options?: { hasActiveAgents?: () => boolean },
+  options?: { hasActiveAgents?: () => boolean; prepareForInstall?: () => Promise<void> },
 ): void {
   hasActiveAgents = options?.hasActiveAgents ?? hasActiveAgents
+  prepareForInstall = options?.prepareForInstall ?? prepareForInstall
   win = mainWindow
 }
 
@@ -108,11 +115,9 @@ export function getUpdateStatus(): UpdateStatus {
 
 /** 手动触发检查更新 */
 export async function checkForUpdates(): Promise<void> {
-  // 下载未完成时不能启动第二次下载；已下载版本仍需检查，以便追赶随后发布的新版。
-  if (currentStatus.status === 'downloading') {
-    console.log('[更新] 跳过检查：正在下载更新')
-    return
-  }
+  // 安装器与下载共用 pending 工件，不能在提交安装时替换文件。
+  if (checkInProgress || activeDownloadVersion || preparingInstall || installInProgress) return
+  checkInProgress = true
 
   downloadedStatusDuringCheck = currentStatus.status === 'downloaded' ? currentStatus : null
 
@@ -133,6 +138,8 @@ export async function checkForUpdates(): Promise<void> {
       status: 'error',
       error: err instanceof Error ? err.message : String(err),
     })
+  } finally {
+    checkInProgress = false
   }
 }
 
@@ -142,7 +149,7 @@ export async function checkForUpdates(): Promise<void> {
  * @returns 是否已接受请求；仅 downloaded 状态可排队。
  */
 export function installWhenIdle(): boolean {
-  if (currentStatus.status !== 'downloaded') {
+  if (currentStatus.status !== 'downloaded' || installInProgress) {
     console.warn('[更新] 跳过空闲安装：当前没有已下载的更新')
     return false
   }
@@ -162,38 +169,35 @@ export function cancelIdleInstall(): void {
   console.log('[更新] 已取消空闲安装请求')
 }
 
-/**
- * 退出并安装已下载的更新。
- *
- * 所有安装入口最终都经过这里：即使调用方绕过空闲调度器，也不会在 Agent
- * 运行时退出；在真正安装前再次检查一次，避免检查与退出之间启动新 Agent。
- */
-function quitAndInstall(): void {
-  if (!app.isPackaged) {
-    console.warn('[更新] 开发环境不支持安装更新')
+/** 先等待后台命令退出，避免 Windows 安装器与旧进程争用应用文件。 */
+async function quitAndInstall(): Promise<void> {
+  if (!app.isPackaged || preparingInstall || installInProgress) return
+  if (currentStatus.status !== 'downloaded' || !currentStatus.installScheduled) return
+  if (checkInProgress || hasActiveAgents()) {
+    idleInstallScheduler.request()
     return
   }
 
+  preparingInstall = true
+  try {
+    await prepareForInstall?.()
+  } catch (error) {
+    console.error('[更新] 安装前清理失败:', error)
+    cancelIdleInstall()
+    return
+  } finally {
+    preparingInstall = false
+  }
+
+  // 等待期间用户可能取消，也可能有新的 Agent 开始运行。
+  if (currentStatus.status !== 'downloaded' || !currentStatus.installScheduled) return
   if (hasActiveAgents()) {
-    console.log('[更新] 检测到运行中的 Agent，改为等待空闲后安装')
-    installWhenIdle()
+    idleInstallScheduler.request()
     return
   }
-
-  // 延迟调用确保 IPC 响应已发送回渲染进程；回调内再次检查防止竞态。
-  setImmediate(() => {
-    if (hasActiveAgents()) {
-      console.log('[更新] 安装前出现新的运行中 Agent，继续等待空闲')
-      installWhenIdle()
-      return
-    }
-
-    // 移除所有窗口的 close 监听器，避免 preventDefault 阻止退出。
-    for (const w of BrowserWindow.getAllWindows()) {
-      w.removeAllListeners('close')
-    }
-    autoUpdater.quitAndInstall(true, true)
-  })
+  installInProgress = true
+  console.log(`[更新] 开始安装 v${currentStatus.version}`)
+  autoUpdater.quitAndInstall(true, true)
 }
 
 /** 清理更新器资源（定时器等） */
@@ -282,6 +286,10 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
   // 手动开始下载，确保重新检查时只在 Release 比已下载版本更新时替换安装包。
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
+  if (process.platform === 'win32') {
+    // 注册表可能保留另一处安装路径。覆盖当前运行的副本，避免重开仍是旧版。
+    (autoUpdater as NsisUpdater).installDirectory = dirname(app.getPath('exe'))
+  }
 
   // 监听更新事件
   autoUpdater.on('checking-for-update', () => {
@@ -351,6 +359,7 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
   })
 
   autoUpdater.on('error', (err) => {
+    installInProgress = false
     if (activeDownloadVersion) {
       handleDownloadFailure(err)
       return

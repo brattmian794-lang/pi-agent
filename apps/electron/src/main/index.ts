@@ -716,11 +716,13 @@ function sendToMainWindow(channel: string, data?: unknown): void {
 
 app.whenReady().then(isUpdaterTestEnabled() ? bootstrapUpdaterTest : bootstrap).catch(handleBootstrapFailure)
 
-/** 只启动真实 updater 与受限外部命令桥，不加载账号、工作区或其他业务服务。 */
+/** 启动真实 updater、打包后的渲染入口和受限命令桥。 */
 async function bootstrapUpdaterTest(): Promise<void> {
-  if (process.env.PROMA_UPDATE_TEST_STARTUP_FAILURE === '1') app.exit(23)
-  const testWindow = new BrowserWindow({ show: false, webPreferences: { sandbox: true } })
-  createUpdaterTestHarness(testWindow)
+  if (process.env.PROMA_UPDATE_TEST_STARTUP_FAILURE === '1') { app.exit(23); return }
+  const testWindow = new BrowserWindow({ show: false, webPreferences: { sandbox: true, javascript: false, backgroundThrottling: false } })
+  const rendererPath = join(__dirname, 'renderer', 'index.html')
+  createUpdaterTestHarness(testWindow, rendererPath)
+  await testWindow.loadFile(rendererPath)
 }
 /**
  * 启动主流程。所有非关键步骤用 safeRun / safeAwait 隔离，
@@ -824,7 +826,10 @@ async function bootstrap(): Promise<void> {
 
   // 自动更新仅在生产环境启用，并由主进程统一检测 Agent 是否空闲。
   if (app.isPackaged && mainWindow) {
-    configureUpdater(mainWindow, { hasActiveAgents: hasActiveAgentSessions })
+    configureUpdater(mainWindow, {
+      hasActiveAgents: hasActiveAgentSessions,
+      prepareForInstall: () => shutdownAgentBackgroundCommands(false),
+    })
     safeRun('initAutoUpdater', () => initAutoUpdater(mainWindow!))
   }
 

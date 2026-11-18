@@ -112,8 +112,8 @@ export class BackgroundCommandService {
     return entry.stopPromise
   }
 
-  async shutdown(): Promise<void> {
-    this.closing = true
+  async shutdown(permanent = true): Promise<void> {
+    if (permanent) this.closing = true
     await Promise.all([...this.sessions.entries()].flatMap(([sessionId, entries]) => [...entries.values()]
       .filter((entry) => entry.execution).map((entry) => entry.stopPromise ?? this.stop(sessionId, entry.command.id))))
     for (const sessionId of this.sessions.keys()) this.save(sessionId)
