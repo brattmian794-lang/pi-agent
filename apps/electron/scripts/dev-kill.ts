@@ -77,6 +77,9 @@ function killStaleVite(port: number): void {
   }
 }
 
+// 安全启动入口不自动清理进程；端口冲突由用户确认归属后处理。
+if (process.env.PROMA_DEV_SKIP_CLEANUP === '1') process.exit(0)
+
 kill(isWin ? 'electronmon.exe' : 'electronmon \\.')
 // Electron 的实际可执行文件不含 dist/main，旧模式无法清理其孤儿进程，
 // 使新 dev 实例拿不到 SingletonLock 并一直停在 electronmon 的 waiting 状态。

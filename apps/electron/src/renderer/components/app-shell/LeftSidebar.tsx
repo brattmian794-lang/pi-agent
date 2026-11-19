@@ -146,6 +146,7 @@ import {
   sortAgentSessionsByUpdatedAtDesc,
 } from '@/lib/agent-session-list'
 import { clearSessionReferenceDragState, insertSessionReferenceMention, setSessionReferenceDragData } from '@/lib/session-reference-drag'
+import { createSidebarRefresh, getAgentSidebarActiveRowId } from '@/lib/sidebar-session-refresh'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -713,6 +714,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const syncActiveTabSideEffects = useSyncActiveTabSideEffects()
   const store = useStore()
   const sidebarRootRef = React.useRef<HTMLDivElement>(null)
+  const agentSidebarRefreshRef = React.useRef(createSidebarRefresh())
   const quickSwitchTargetsRef = React.useRef<QuickSwitchTarget[]>([])
   // 快捷切换只会标注前 9 行；保留它们避免滚动时全量清理/重写所有列表行。
   const quickSwitchHintRowsRef = React.useRef<HTMLElement[]>([])
@@ -727,18 +729,25 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const setSearchDialogOpen = useSetAtom(searchDialogOpenAtom)
   const newChatShortcutLabel = getAcceleratorDisplay(getActiveAccelerator('new-session'))
 
-  /** 归档会话只在用户打开归档视图时加载；active 视图只保留未归档元数据。 */
   const refreshAgentSidebarSessions = React.useCallback(async (includeArchived: boolean): Promise<void> => {
-    const [activeSessions, archivedCount] = await Promise.all([
-      window.electronAPI.listActiveAgentSessions(),
-      window.electronAPI.countArchivedAgentSessions(),
-    ])
-    const sessions = includeArchived
-      ? [...activeSessions, ...(await window.electronAPI.listArchivedAgentSessions())]
-      : activeSessions
-    setAgentSessions(sessions)
-    setArchivedAgentSessionCount(archivedCount)
-  }, [setAgentSessions])
+    await agentSidebarRefreshRef.current.run(
+      () => JSON.stringify(store.get(agentSessionsAtom)),
+      async () => {
+        const [activeSessions, archivedCount] = await Promise.all([
+          window.electronAPI.listActiveAgentSessions(),
+          window.electronAPI.countArchivedAgentSessions(),
+        ])
+        const sessions = includeArchived
+          ? [...activeSessions, ...(await window.electronAPI.listArchivedAgentSessions())]
+          : activeSessions
+        return { sessions, archivedCount }
+      },
+      ({ sessions, archivedCount }) => {
+        setAgentSessions(sessions)
+        setArchivedAgentSessionCount(archivedCount)
+      },
+    )
+  }, [setAgentSessions, store])
 
   const handleOpenSettings = React.useCallback((): void => {
     setSettingsOpen(true)
@@ -1261,13 +1270,22 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
 
     try {
       await window.electronAPI.deleteConversation(pendingDeleteId)
-      // 全量刷新确保与后端同步
-      const conversations = await window.electronAPI.listConversations()
-      setConversations(conversations)
+      toast.success('对话已删除')
     } catch (error) {
       console.error('[侧边栏] 删除对话失败:', error)
       // 即使后端报错，也从本地列表移除（可能是对话已不存在）
       setConversations((prev) => prev.filter((c) => c.id !== pendingDeleteId))
+      toast.error('删除对话失败，请重试')
+      setPendingDeleteId(null)
+      return
+    }
+
+    try {
+      // 全量刷新确保与后端同步
+      const conversations = await window.electronAPI.listConversations()
+      setConversations(conversations)
+    } catch (error) {
+      console.error('[侧边栏] 删除后刷新对话列表失败:', error)
     } finally {
       setPendingDeleteId(null)
     }
@@ -2400,6 +2418,8 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
       onOpenChange={(open) => { if (!open) setPendingDeleteId(null) }}
     >
       <AlertDialogContent
+        hideNativeBrowser
+        className="max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] overflow-y-auto"
         onKeyDown={(e) => {
           if (e.key !== 'Enter') return
           // 若焦点已在某个 Action 按钮上，让按钮自身的 onClick 处理（避免重复触发）
@@ -3598,11 +3618,18 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
         </SidebarScrollBoundary>
       ) : mode === 'agent' && viewMode === 'active' ? (
         <SidebarScrollBoundary key="agent-active-boundary">
-          <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin titlebar-no-drag px-2 pb-3">
-            {agentActiveVirtualRows.map((row) => (
-              <React.Fragment key={row.id}>{row.content}</React.Fragment>
-            ))}
-          </div>
+          <VirtualSidebarList
+            key="agent-active-list"
+            className="flex-1 px-2 pb-3"
+            rows={agentActiveVirtualRows}
+            activeRowId={getAgentSidebarActiveRowId(
+              agentActiveVirtualRows.map((row) => row.id),
+              'agent',
+              activeSessionId,
+              activeDelegationSessionId,
+              agentSessions.find((session) => session.id === activeSessionId)?.parentSessionId,
+            )}
+          />
         </SidebarScrollBoundary>
       ) : (
         <>

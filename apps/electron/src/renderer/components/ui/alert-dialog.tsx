@@ -30,10 +30,12 @@ AlertDialogOverlay.displayName = AlertDialogPrimitive.Overlay.displayName
 
 const AlertDialogContent = React.forwardRef<
   React.ElementRef<typeof AlertDialogPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Content>
->(({ className, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Content> & {
+    hideNativeBrowser?: boolean
+  }
+>(({ className, hideNativeBrowser, ...props }, ref) => (
   <AlertDialogPortal>
-    <AlertDialogOverlay />
+    <AlertDialogOverlay data-hide-native-browser={hideNativeBrowser || undefined} />
     <AlertDialogPrimitive.Content
       ref={ref}
       className={cn(

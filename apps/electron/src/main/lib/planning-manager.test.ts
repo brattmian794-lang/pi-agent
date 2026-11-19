@@ -1,16 +1,20 @@
 import { expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 const managerModulePath = join(import.meta.dir, 'planning-manager.ts')
 const repoRoot = dirname(dirname(dirname(dirname(dirname(import.meta.dir)))))
-const electronBinary = createRequire(import.meta.url)('electron') as string
+// 直接读取包元数据，避免全量测试中 electron 的模块 mock 污染可执行路径。
+const electronDirectory = dirname(createRequire(import.meta.url).resolve('electron/package.json'))
+const electronExecutable = readFileSync(join(electronDirectory, 'path.txt'), 'utf8').trim()
+const electronBinary = join(process.env.ELECTRON_OVERRIDE_DIST_PATH ?? join(electronDirectory, 'dist'), electronExecutable)
+if (!existsSync(electronBinary)) throw new Error(`Electron 可执行文件不存在: ${electronBinary}`)
 
 /**
- * planning-manager 的数据库连接是模块级单例，而 node:sqlite 仅由 Electron 的 Node 22 提供。
+ * planning-manager 的数据库连接是模块级单例，需要在 Electron 自带的 node:sqlite 中验证。
  * 因此用 Bun 打包 TypeScript 验证脚本，再用独立 Electron Node 进程执行真实 SQLite 回归。
  */
 test('Given a fresh planning database When planning data changes Then isolation, transactions, reminders and optimistic versions stay correct', async () => {
@@ -113,11 +117,13 @@ test('Given a fresh planning database When planning data changes Then isolation,
 
     const result = spawnSync(electronBinary, [outputPath], {
       cwd: repoRoot,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', HOME: home, PROMA_DEV: '1' },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', HOME: home, USERPROFILE: home, PROMA_DEV: '1' },
+      timeout: 30_000,
       encoding: 'utf8',
     })
+    expect(result.error, result.error?.message).toBeUndefined()
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }
-})
+}, 40_000)

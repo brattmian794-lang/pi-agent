@@ -177,6 +177,11 @@ pi-agent 支持主流的文件预览和编辑，比如 markdown，我们采用�
 
 
 
+## 源码开发启动
+
+首次环境准备、Windows / macOS / Linux 启动脚本、热更新与故障排查，见 [开发模式启动指南](./docs/development.md)。
+
+
 ## 贡献
 
 欢迎修 Bug、补文档、加测试、完善体验，也欢迎围绕真实场景提交新的 Skills、MCP 配置或 Agent 工作流。

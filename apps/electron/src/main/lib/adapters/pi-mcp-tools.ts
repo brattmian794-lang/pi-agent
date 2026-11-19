@@ -180,21 +180,19 @@ function createTransport(name: string, config: PiMcpServerConfig): Transport | u
       return undefined
     }
     const headers = getHeaders(config)
-    const proxyFetch = getProxyFetch(config)
+    const sseFetch = createManagedProxyFetch(typeof config.proxyUrl === 'string' ? config.proxyUrl : undefined, { bodyTimeoutMs: 0 })
     const transport = new SSEClientTransport(new URL(config.url), {
       requestInit: headers ? { headers } : undefined,
-      fetch: proxyFetch?.fetch,
-      eventSourceInit: headers || proxyFetch
-        ? ({
-          fetch: (input: RequestInfo | URL, init?: RequestInit) => {
-            const mergedHeaders = new Headers(init?.headers)
-            for (const [key, value] of Object.entries(headers ?? {})) mergedHeaders.set(key, value)
-            return (proxyFetch?.fetch ?? fetch)(input, { ...init, headers: mergedHeaders })
-          },
-        } as any)
-        : undefined,
+      fetch: sseFetch.fetch,
+      eventSourceInit: {
+        fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+          const mergedHeaders = new Headers(init?.headers)
+          for (const [key, value] of Object.entries(headers ?? {})) mergedHeaders.set(key, value)
+          return sseFetch.fetch(input, { ...init, headers: mergedHeaders })
+        },
+      },
     })
-    if (proxyFetch) transportProxyFetches.set(transport, proxyFetch)
+    transportProxyFetches.set(transport, sseFetch)
     return transport
   }
 

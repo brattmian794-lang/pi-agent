@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { MAC_DIFFERENTIAL_CACHE_TTL_MS, createUpdateCacheCleanup, shouldDeferUpdateCacheCleanup } from './update-cache-cleanup'
@@ -78,7 +78,7 @@ describe('更新安装包缓存清理', () => {
     expect(existsSync(outsideFile)).toBe(true)
   })
 
-  test('Given 下载路径经过软链接目录 When 记录 Then 拒绝为其建立删除状态', () => {
+  test('Given 下载路径经过目录链接 When 记录 Then 拒绝为其建立删除状态', () => {
     const fixture = createFixture()
     const outsideCacheDirectory = join(dirname(fixture.baseCacheDirectory), 'outside-cache')
     const linkedCacheDirectory = join(fixture.baseCacheDirectory, 'linked-cache')
@@ -86,7 +86,9 @@ describe('更新安装包缓存清理', () => {
     const linkedInstaller = join(linkedPendingDirectory, 'Proma-0.20.0.exe')
     mkdirSync(linkedPendingDirectory, { recursive: true })
     writeFileSync(linkedInstaller, 'installer')
-    symlinkSync(outsideCacheDirectory, linkedCacheDirectory)
+    symlinkSync(outsideCacheDirectory, linkedCacheDirectory, process.platform === 'win32' ? 'junction' : 'dir')
+    expect(lstatSync(linkedCacheDirectory).isSymbolicLink()).toBe(true)
+    expect(realpathSync(linkedCacheDirectory)).toBe(realpathSync(outsideCacheDirectory))
 
     const cleanup = createUpdateCacheCleanup(fixture)
 
@@ -97,10 +99,15 @@ describe('更新安装包缓存清理', () => {
 
   test('Given 缓存状态无法持久化 When 下载完成 Then 不抛错且保留可安装文件', () => {
     const fixture = createFixture()
-    const cleanup = createUpdateCacheCleanup({ ...fixture, stateFilePath: join('/dev/null', 'updater-cache-state.json') })
+    const blockedParent = join(dirname(fixture.baseCacheDirectory), 'blocked-state-parent')
+    writeFileSync(blockedParent, 'keep')
+    const stateFilePath = join(blockedParent, 'updater-cache-state.json')
+    const cleanup = createUpdateCacheCleanup({ ...fixture, stateFilePath })
 
     expect(cleanup.recordDownloadedUpdate('0.20.0', fixture.downloadedFile)).toBe(false)
     expect(existsSync(fixture.downloadedFile)).toBe(true)
+    expect(existsSync(stateFilePath)).toBe(false)
+    expect(readFileSync(blockedParent, 'utf8')).toBe('keep')
   })
 
   test('Given pending 含不受信任目录 When 清理 Then 保留状态并拒绝递归删除', () => {
@@ -118,18 +125,37 @@ describe('更新安装包缓存清理', () => {
     expect(readFileSync(join(unexpectedDirectory, 'keep'), 'utf8')).toBe('keep')
   })
 
-  test('Given 删除被文件系统拒绝 When 清理 Then 保留状态供下次启动重试', () => {
+  test('Given 删除被文件系统拒绝 When 清理并重试 Then 保留状态且下次成功清理', () => {
     const fixture = createFixture()
-    const cleanup = createUpdateCacheCleanup(fixture)
-    cleanup.recordDownloadedUpdate('0.20.0', fixture.downloadedFile)
-    chmodSync(fixture.pendingDirectory, 0o500)
+    let rejectDeletion = true
+    const deletionAttempts: string[] = []
+    const cleanup = createUpdateCacheCleanup({
+      ...fixture,
+      removePendingFile: (filePath) => {
+        deletionAttempts.push(filePath)
+        if (rejectDeletion) throw Object.assign(new Error('模拟文件被占用'), { code: 'EPERM' })
+        unlinkSync(filePath)
+      },
+    })
+    expect(cleanup.recordDownloadedUpdate('0.20.0', fixture.downloadedFile)).toBe(true)
 
     const result = cleanup.cleanupForRunningVersion('0.20.0')
 
-    chmodSync(fixture.pendingDirectory, 0o700)
     expect(result.status).toBe('failed')
+    expect(result.deletedCount).toBe(0)
     expect(existsSync(fixture.stateFilePath)).toBe(true)
     expect(existsSync(fixture.downloadedFile)).toBe(true)
+    expect(deletionAttempts).toEqual([fixture.downloadedFile])
+
+    rejectDeletion = false
+    const retryResult = cleanup.cleanupForRunningVersion('0.20.0')
+
+    expect(retryResult).toEqual({ status: 'cleaned', deletedCount: 1 })
+    expect(deletionAttempts).toEqual([fixture.downloadedFile, fixture.downloadedFile])
+    expect(existsSync(fixture.downloadedFile)).toBe(false)
+    expect(existsSync(fixture.pendingDirectory)).toBe(false)
+    expect(existsSync(fixture.stateFilePath)).toBe(false)
+    expect(existsSync(`${fixture.stateFilePath}.bak`)).toBe(false)
   })
 
   test('Given macOS 差分缓存过期且有新待安装更新 When 后续启动 Then 回收差分缓存但保留新安装包', () => {

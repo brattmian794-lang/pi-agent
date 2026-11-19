@@ -31,6 +31,21 @@ export function shouldCopyForkWorkspacePath(src: string): boolean {
   return !FORK_WORKSPACE_COPY_BLOCKLIST.has(basename(src))
 }
 
+const ENOENT_COPY_ATTEMPTS = 3
+
+export async function copyForkEntryWithRetry(copy: () => Promise<void>): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await copy()
+      return
+    } catch (error) {
+      const isMissingEntry = typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
+      if (!isMissingEntry || attempt >= ENOENT_COPY_ATTEMPTS) throw error
+      await new Promise((resolve) => setTimeout(resolve, attempt * 25))
+    }
+  }
+}
+
 export async function copyForkWorkspaceFiles(sourceDir: string, destDir: string): Promise<ForkWorkspaceCopyResult> {
   await mkdir(destDir, { recursive: true })
 
@@ -51,10 +66,10 @@ export async function copyForkWorkspaceFiles(sourceDir: string, destDir: string)
     }
 
     try {
-      await cp(srcPath, destPath, {
+      await copyForkEntryWithRetry(() => cp(srcPath, destPath, {
         recursive: true,
         filter: shouldCopyForkWorkspacePath,
-      })
+      }))
       result.copiedCount += 1
     } catch (err) {
       result.failedCount += 1

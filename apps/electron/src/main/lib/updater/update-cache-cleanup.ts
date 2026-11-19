@@ -49,6 +49,8 @@ export interface UpdateCacheCleanupOptions {
   platform?: NodeJS.Platform
   now?: () => number
   log?: Pick<Console, 'info' | 'warn'>
+  /** pending 普通文件的删除操作；默认使用真实文件系统，可注入以验证删除失败后的重试。 */
+  removePendingFile?: (filePath: string) => void
 }
 
 /**
@@ -148,7 +150,7 @@ export function createUpdateCacheCleanup(options: UpdateCacheCleanupOptions) {
       } else if (!isVersionAtLeast(runningVersion, pending.targetVersion)) {
         // 尚未切换到目标版本时，待安装包仍可能用于重试，绝不能删除。
       } else {
-        const removal = removePendingDirectory(pending.pendingDirectory, pending.cacheDirectory, baseCacheDirectory)
+        const removal = removePendingDirectory(pending.pendingDirectory, pending.cacheDirectory, baseCacheDirectory, options.removePendingFile ?? unlinkSync)
         deletedCount += removal.deletedCount
 
         if (removal.status === 'removed' || removal.status === 'absent') {
@@ -305,6 +307,7 @@ function removePendingDirectory(
   pendingDirectory: string,
   cacheDirectory: string,
   baseCacheDirectory: string,
+  removePendingFile: (filePath: string) => void,
 ): PendingRemovalResult {
   if (!existsSync(pendingDirectory)) return { status: 'absent', deletedCount: 0 }
   if (!isSafeManagedPendingDirectory(pendingDirectory, cacheDirectory, baseCacheDirectory)) {
@@ -316,7 +319,7 @@ function removePendingDirectory(
     for (const entry of readdirSync(pendingDirectory)) {
       const entryPath = join(pendingDirectory, entry)
       if (!hasRegularFile(entryPath)) return { status: 'unsafe', deletedCount }
-      unlinkSync(entryPath)
+      removePendingFile(entryPath)
       deletedCount += 1
     }
 

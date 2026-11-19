@@ -5,58 +5,44 @@
  * 用于渠道配置了代理地址时，让 AI API 请求走指定代理。
  */
 
-import { ProxyAgent, fetch as undiciFetch } from 'undici'
+import { Agent, ProxyAgent, fetch as undiciFetch } from 'undici'
 import type { Dispatcher, RequestInfo, RequestInit } from 'undici'
+import type { Agent as UndiciAgent } from 'undici'
 
 export interface ManagedProxyFetch {
   fetch: typeof globalThis.fetch
   close: () => Promise<void>
 }
 
-/**
- * 创建可释放的请求级代理 fetch。短生命周期操作（例如 MCP 验证）必须在 finally
- * 调用 close，长期 MCP 连接则由 connection 生命周期持有并在 close 时释放。
- */
-export function createManagedProxyFetch(proxyUrl?: string): ManagedProxyFetch {
-  const normalizedProxyUrl = proxyUrl?.trim()
-  if (!normalizedProxyUrl) return { fetch, close: async () => undefined }
+export interface ManagedProxyFetchOptions {
+  bodyTimeoutMs?: number
+}
 
-  const dispatcher = new ProxyAgent(normalizedProxyUrl)
+export function createManagedProxyFetch(proxyUrl?: string, options: ManagedProxyFetchOptions = {}): ManagedProxyFetch {
+  const normalizedProxyUrl = proxyUrl?.trim()
+  const agentOptions: UndiciAgent.Options = options.bodyTimeoutMs === undefined ? {} : { bodyTimeout: options.bodyTimeoutMs }
+  const dispatcher = normalizedProxyUrl
+    ? new ProxyAgent({ uri: normalizedProxyUrl, ...agentOptions })
+    : options.bodyTimeoutMs === undefined ? undefined : new Agent(agentOptions)
+  if (!dispatcher) return { fetch, close: async () => undefined }
+
   return {
-    fetch: ((input: RequestInfo | URL, init?: RequestInit) => {
-      return undiciFetch(input as RequestInfo, { ...init, dispatcher })
-    }) as unknown as typeof globalThis.fetch,
+    fetch: ((input: RequestInfo | URL, init?: RequestInit) => undiciFetch(input as RequestInfo, { ...init, dispatcher })) as unknown as typeof globalThis.fetch,
     close: async () => {
       await (dispatcher as Dispatcher & { close?: () => Promise<void> }).close?.().catch(() => undefined)
     },
   }
 }
 
+
 /**
- * 创建代理 fetch 函数
- *
- * @param proxyUrl 代理地址（如 http://127.0.0.1:7890）
- * @returns 走代理的 fetch 函数，签名兼容全局 fetch
+ * 创建代理 fetch 函数。
  */
 export function createProxyFetch(proxyUrl: string): typeof globalThis.fetch {
   const dispatcher = new ProxyAgent(proxyUrl)
-
-  return ((input: RequestInfo | URL, init?: RequestInit) => {
-    return undiciFetch(input as RequestInfo, {
-      ...init,
-      dispatcher,
-    })
-  }) as unknown as typeof globalThis.fetch
+  return ((input: RequestInfo | URL, init?: RequestInit) => undiciFetch(input as RequestInfo, { ...init, dispatcher })) as unknown as typeof globalThis.fetch
 }
 
-/**
- * 根据代理地址获取 fetch 函数
- *
- * 如果 proxyUrl 有值则返回代理 fetch，否则返回全局 fetch。
- */
 export function getFetchFn(proxyUrl?: string): typeof globalThis.fetch {
-  if (proxyUrl?.trim()) {
-    return createProxyFetch(proxyUrl.trim())
-  }
-  return fetch
+  return proxyUrl?.trim() ? createProxyFetch(proxyUrl.trim()) : fetch
 }
