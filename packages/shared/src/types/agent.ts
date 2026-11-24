@@ -636,9 +636,9 @@ export type PromaEvent =
   | { type: 'context_window'; contextWindow: number }
   | { type: 'permission_mode_changed'; mode: PromaPermissionMode }
   | { type: 'title_updated'; title: string }
-  | { type: 'external_run_started'; source: AgentExternalRunSource; sessionId: string; title?: string; workspaceId?: string; modelId?: string; startedAt: number; runGeneration?: number; session?: AgentSessionMeta; userMessage?: string; userMessageUuid?: string }
+  | { type: 'external_run_started'; source: AgentExternalRunSource; sessionId: string; title?: string; workspaceId?: string; modelId?: string; startedAt: number; runGeneration?: number; session?: AgentSessionMeta; userMessage?: string; userMessageUuid?: string; browserRouteLabel?: string }
   /** 普通桌面会话已开始执行；startedAt 用于展示，runGeneration 是主进程单调递增的可靠代际。 */
-  | { type: 'run_started'; startedAt: number; runGeneration?: number }
+  | { type: 'run_started'; startedAt: number; runGeneration?: number; browserRouteLabel?: string }
   /** 普通桌面会话已结束；供已显式配置的外部通知通道发送摘要。 */
   | { type: 'run_completed'; source: AgentExternalRunSource | 'desktop'; stoppedByUser: boolean; startedAt?: number; runGeneration?: number }
   | { type: 'run_resumed'; sessionId: string }

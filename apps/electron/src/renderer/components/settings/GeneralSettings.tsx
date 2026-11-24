@@ -24,6 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../ui/select'
+import { EgoLiteSettingsSection } from './EgoLiteSettingsSection'
 import { UserAvatar } from '../chat/UserAvatar'
 import { userProfileAtom } from '@/atoms/user-profile'
 import {
@@ -433,6 +434,7 @@ export function GeneralSettings(): React.ReactElement {
           />
         </SettingsCard>
       </SettingsSection>
+      <EgoLiteSettingsSection />
 
     </div>
   )

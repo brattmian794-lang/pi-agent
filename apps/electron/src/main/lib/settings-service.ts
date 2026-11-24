@@ -7,10 +7,23 @@
 
 import { readFileSync, existsSync } from 'node:fs'
 import { writeJsonFileAtomic } from './safe-file'
+import { app } from 'electron'
+import { revokeEgoLiteRuns } from './ego-lite-revocation'
+import { normalizeEgoLiteSettings } from './ego-lite-settings-policy'
+import type { EgoLiteSettings } from '@proma/shared'
 import { getSettingsPath } from './config-paths'
 import { DEFAULT_THEME_MODE, normalizeProductivityToolsSettings } from '../../types'
 import type { AgentIslandSettings, AppSettings } from '../../types'
 import { getTerminalProfilesForPlatform, isTerminalProfile } from '@proma/shared'
+
+export function isEgoLiteEligible(): boolean {
+  return app?.isPackaged === false && ((process.platform === 'win32' && process.arch === 'x64') ||
+    (process.platform === 'darwin' && ['arm64', 'x64'].includes(process.arch)))
+}
+
+export function effectiveEgoLiteSettings(settings: Partial<AppSettings>): EgoLiteSettings {
+  return normalizeEgoLiteSettings(settings, isEgoLiteEligible())
+}
 
 function sanitizeAgentIslandSettings(input: unknown): AgentIslandSettings | undefined {
   if (!input || typeof input !== 'object') return undefined
@@ -34,6 +47,7 @@ export function getSettings(): AppSettings {
 
   if (!existsSync(filePath)) {
     return {
+      ...effectiveEgoLiteSettings({}),
       themeMode: DEFAULT_THEME_MODE,
       onboardingCompleted: false,
       environmentCheckSkipped: false,
@@ -72,6 +86,7 @@ export function getSettings(): AppSettings {
     } = data
     return {
       ...settings,
+      ...effectiveEgoLiteSettings(settings),
       themeMode: data.themeMode || DEFAULT_THEME_MODE,
       diagnosticLoggingEnabled: settings.diagnosticLoggingEnabled === true,
       onboardingCompleted: data.onboardingCompleted ?? false,
@@ -96,6 +111,7 @@ export function getSettings(): AppSettings {
   } catch (error) {
     console.error('[设置] 读取失败:', error)
     return {
+      ...effectiveEgoLiteSettings({}),
       themeMode: DEFAULT_THEME_MODE,
       onboardingCompleted: false,
       environmentCheckSkipped: false,
@@ -122,6 +138,7 @@ export function updateSettings(updates: Partial<AppSettings>): AppSettings {
   const updated: AppSettings = {
     ...current,
     ...updates,
+    ...effectiveEgoLiteSettings({ ...current, ...updates }),
     // 仅保留 macOS 原生 Island 开关，避免旧非原生 surface 字段被继续回写。
     agentIsland: updates.agentIsland === undefined
       ? sanitizeAgentIslandSettings(current.agentIsland)
@@ -138,6 +155,11 @@ export function updateSettings(updates: Partial<AppSettings>): AppSettings {
   } catch (error) {
     console.error('[设置] 写入失败:', error)
     throw new Error('写入应用设置失败')
+  }
+
+  if (updates.egoLiteEnabled === false || (current.browserExecutionBackend === 'egoLite' && updated.browserExecutionBackend !== 'egoLite') ||
+    (updates.egoLiteProfileMode !== undefined && current.egoLiteProfileMode !== updated.egoLiteProfileMode)) {
+    revokeEgoLiteRuns()
   }
 
   return updated

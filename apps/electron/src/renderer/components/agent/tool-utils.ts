@@ -1,3 +1,4 @@
+import { externalBrowserLabels, externalBrowserLabel } from '../../../shared/external-browser-labels'
 /**
  * 工具展示的可复用函数和常量。
  * 供 SDK 内容块、任务进度卡片等组件复用。
@@ -115,6 +116,7 @@ export const TOOL_ICONS: Record<string, LucideIcon> = {
  * 未匹配时返回默认的 Wrench 图标
  */
 export function getToolIcon(toolName: string): LucideIcon {
+  if (externalBrowserLabel(toolName)) return Globe
   if (TOOL_ICONS[toolName]) return TOOL_ICONS[toolName]
   if (toolName.startsWith('mcp__')) return Plug
   return Wrench
@@ -122,6 +124,7 @@ export function getToolIcon(toolName: string): LucideIcon {
 
 /** 内置工具显示名称映射 */
 const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  ...externalBrowserLabels,
   Edit: '编辑文件',
   Write: '写入文件',
   Read: '读取文件',

@@ -762,7 +762,7 @@ export function useGlobalAgentListeners(): void {
         clearCompletionAttention(event.sessionId)
         store.set(agentStreamingStatesAtom, (prev) => {
           const map = new Map(prev)
-          map.set(event.sessionId, activation.streamState)
+          map.set(event.sessionId, { ...activation.streamState, browserRouteLabel: event.browserRouteLabel })
           return map
         })
 
@@ -1229,7 +1229,12 @@ export function useGlobalAgentListeners(): void {
             ) {
               if (current.runGeneration > runStartedEvent.runGeneration) return prev
               // 重复 start 保留已有 live 状态；已结束 run 更不能被重复 start 复活。
-              if (current.runGeneration === runStartedEvent.runGeneration) return prev
+              if (current.runGeneration === runStartedEvent.runGeneration) {
+                if (!current.running || !runStartedEvent.browserRouteLabel || current.browserRouteLabel) return prev
+                const map = new Map(prev)
+                map.set(sessionId, { ...current, browserRouteLabel: runStartedEvent.browserRouteLabel })
+                return map
+              }
             }
             // 旧协议事件没有代际，只能保留 startedAt 回退比较。
             if (runStartedEvent.runGeneration == null && current?.startedAt != null && (
@@ -1240,6 +1245,7 @@ export function useGlobalAgentListeners(): void {
             map.set(sessionId, {
               ...createQueuedAgentStreamState(current, runStartedEvent.startedAt),
               ...(runStartedEvent.runGeneration != null ? { runGeneration: runStartedEvent.runGeneration } : {}),
+              browserRouteLabel: runStartedEvent.browserRouteLabel,
             })
             acceptedRunStart = true
             return map

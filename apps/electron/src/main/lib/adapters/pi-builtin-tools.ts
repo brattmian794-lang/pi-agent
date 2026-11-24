@@ -8,6 +8,8 @@
  */
 
 import { Type } from 'typebox'
+import { buildExternalBrowserTools } from './pi-external-browser-tools'
+import type { ExternalBrowserRun } from '../agent-external-browser'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AgentToolResult } from '@earendil-works/pi-agent-core'
 import { AGENT_IPC_CHANNELS, getTerminalProfilesForPlatform, normalizePathForCompare, parseTerminalProfile } from '@proma/shared'
@@ -97,6 +99,7 @@ type PiSdk = typeof import('@earendil-works/pi-coding-agent')
 // ===== 通用 =====
 
 export interface PiBuiltinToolsContext {
+  externalBrowser?: ExternalBrowserRun
   sessionId: string
   channelId: string
   modelId?: string
@@ -1639,7 +1642,11 @@ export async function buildPiBuiltinTools(
   // Pi-native 受管浏览器不经过 MCP：网页 WebContents 和 CDP 永远停留在主进程。
   // 用户会话、自动任务与协作子会话共用同一套受管浏览器能力，仍受 URL、下载和权限策略约束。
   try {
-    tools.push(...buildBrowserTools(sdk, ctx))
+    const builtin = buildBrowserTools(sdk, ctx)
+    tools.push(...(ctx.externalBrowser ? [
+      ...builtin.filter(tool => tool.name === 'BrowserPreviewOpen'),
+      ...buildExternalBrowserTools(sdk, ctx.externalBrowser),
+    ] : builtin))
   } catch (error) {
     console.error('[Pi 桥接] 注入受管浏览器工具失败:', error)
   }

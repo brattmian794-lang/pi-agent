@@ -6,6 +6,7 @@
  */
 
 import { computeDiffStats } from './tool-utils'
+import { externalBrowserLabel } from '../../../shared/external-browser-labels'
 
 const INTERNAL_TOOL_INPUT_PREFIX = '_'
 
@@ -103,6 +104,9 @@ function truncate(text: string, max: number): string {
  * 返回的 label 应读起来像一个完整动宾短语，无冗余信息。
  */
 export function getToolPhrase(toolName: string, input: Record<string, unknown>): ToolPhrase {
+  const external = externalBrowserLabel(toolName)
+  if (external) return phrase(external)
+  if (toolName === 'BrowserPreviewOpen') return phrase('在应用内打开本地网页预览')
   const explicitIntent = getExplicitToolIntent(toolName, input)
   if (explicitIntent && toolName !== 'Edit' && toolName !== 'Write') {
     return phrase(explicitIntent)

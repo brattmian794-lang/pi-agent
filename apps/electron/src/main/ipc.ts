@@ -6,6 +6,12 @@
 
 import { ipcMain, nativeTheme, shell, dialog, BrowserWindow, app, clipboard, nativeImage } from 'electron'
 import { registerDiagnosticIpc } from './lib/diagnostic-service'
+import { EGO_LITE_SETTINGS_IPC, isEgoSetupActive } from '@proma/shared'
+import { egoLiteSetup } from './lib/ego-lite-setup-service'
+import { revokeEgoLiteRuns } from './lib/ego-lite-revocation'
+import { probeEgoLite } from './lib/ego-lite-runtime'
+import { assertGenericSettingsUpdate, egoLiteSettingsChange } from './lib/ego-lite-settings-policy'
+import { isEgoLiteEligible, effectiveEgoLiteSettings } from './lib/settings-service'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { existsSync, realpathSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { realpath, stat, writeFile } from 'node:fs/promises'
@@ -2201,6 +2207,82 @@ export function registerIpcHandlers(): void {
 
   // ===== 应用设置相关 =====
 
+  // 通用设置使用主窗口顶层文档。辅助窗口、子 frame、错误页均不能操作此集成。
+  const assertEgoLiteSettingsSender = (event: Electron.IpcMainInvokeEvent): void => {
+    const contents = getMainWindow()?.webContents
+    const frame = event.senderFrame
+    if (!isEgoLiteEligible() || !contents || !frame || event.sender !== contents ||
+        frame !== contents.mainFrame || frame.url.split('#')[0] !== 'http://127.0.0.1:5173/') {
+      throw new Error('Ego Lite 仅限开发环境的通用设置页使用')
+    }
+  }
+  ipcMain.handle(EGO_LITE_SETTINGS_IPC.GET, (event) => {
+    if (!isEgoLiteEligible()) return null
+    assertEgoLiteSettingsSender(event)
+    return effectiveEgoLiteSettings(getSettings())
+  })
+  const startSetup = (workspaceId?: unknown) => {
+    if (workspaceId !== undefined && (typeof workspaceId !== 'string' || !workspaceId.trim() || workspaceId.length > 256)) {
+      throw new Error('工作区标识无效')
+    }
+    const state = egoLiteSetup.status()
+    if (isEgoSetupActive(state.stage)) return state
+    const started = egoLiteSetup.start(workspaceId)
+    // 复检暂停现有 Ego 操作，不覆盖用户下一轮的后端偏好。
+    revokeEgoLiteRuns()
+    return started
+  }
+  const cancelSetup = () => {
+    try {
+      return egoLiteSetup.cancel()
+    } finally {
+      updateSettings({ egoLiteEnabled: false })
+    }
+  }
+  ipcMain.handle(EGO_LITE_SETTINGS_IPC.START, (event, workspaceId: unknown) => {
+    assertEgoLiteSettingsSender(event)
+    return startSetup(workspaceId)
+  })
+  ipcMain.handle(EGO_LITE_SETTINGS_IPC.CANCEL, (event) => {
+    assertEgoLiteSettingsSender(event)
+    return egoLiteSetup.cancel()
+  })
+  ipcMain.handle(EGO_LITE_SETTINGS_IPC.STATUS, (event) => {
+    assertEgoLiteSettingsSender(event)
+    return egoLiteSetup.status()
+  })
+  ipcMain.handle(EGO_LITE_SETTINGS_IPC.CHANGE, (event, change: unknown) => {
+    assertEgoLiteSettingsSender(event)
+    if (change === true || change === false) {
+      if (change === false) cancelSetup()
+      else if (!getSettings().egoLiteEnabled) startSetup()
+      return effectiveEgoLiteSettings(getSettings())
+    }
+    const settings = effectiveEgoLiteSettings(getSettings())
+    const updates = egoLiteSettingsChange(change, settings, change === 'egoLite' ? egoLiteSetup.status().stage : undefined)
+    if (change === 'egoLite') {
+      const owner = getMainWindow()
+      if (!owner) throw new Error('设置窗口已关闭')
+      const answer = dialog.showMessageBoxSync(owner, {
+        type: 'question', title: 'Ego Lite',
+        message: '下一次运行使用 Ego Lite？',
+        detail: getSettings().egoLiteProfileMode === 'workspace'
+          ? 'Agent 将操作当前工作区的独立 Profile。'
+          : 'Agent 将复用当前默认 Profile；各工作区共享登录态和网站数据。',
+        buttons: ['取消', '使用外部浏览器'], defaultId: 0, cancelId: 0,
+      })
+      if (answer !== 1) return effectiveEgoLiteSettings(getSettings())
+      assertEgoLiteSettingsSender(event)
+      if (isEgoSetupActive(egoLiteSetup.status().stage) || !getSettings().egoLiteEnabled) throw new Error('请先完成 Ego Lite 准备')
+    }
+    return effectiveEgoLiteSettings(updateSettings(updates))
+  })
+  ipcMain.handle(EGO_LITE_SETTINGS_IPC.PROBE, (event) => {
+    assertEgoLiteSettingsSender(event)
+    if (!getSettings().egoLiteEnabled) throw new Error('请先启用 Ego Lite')
+    return probeEgoLite()
+  })
+
   // 获取应用设置
   ipcMain.handle(
     SETTINGS_IPC_CHANNELS.GET,
@@ -2213,6 +2295,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     SETTINGS_IPC_CHANNELS.UPDATE,
     async (event, updates: Partial<AppSettings>): Promise<AppSettings> => {
+      assertGenericSettingsUpdate(updates)
       const result = await updateSettings(updates)
 
       if (updates.feishuSessionMirror !== undefined) {
@@ -2245,6 +2328,7 @@ export function registerIpcHandlers(): void {
     SETTINGS_IPC_CHANNELS.UPDATE_SYNC,
     (event, updates: Partial<AppSettings>) => {
       try {
+        assertGenericSettingsUpdate(updates)
         const result = updateSettings(updates)
         if (updates.feishuSessionMirror !== undefined) {
           syncFeishuSyncSleepBlocker(result)

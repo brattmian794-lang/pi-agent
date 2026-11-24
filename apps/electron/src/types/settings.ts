@@ -295,6 +295,10 @@ export const BROWSER_RISK_DISCLAIMER_VERSION = 1
 
 /** 应用设置 */
 export interface AppSettings {
+  egoLiteEnabled?: boolean
+  browserExecutionBackend?: 'builtin' | 'egoLite'
+  /** 默认复用当前默认 Profile；workspace 要求独立的非默认 Profile。 */
+  egoLiteProfileMode?: 'current' | 'workspace'
   /** 本地诊断日志默认关闭，不改变构建模式或数据目录。 */
   diagnosticLoggingEnabled?: boolean
   /** 主题模式 */

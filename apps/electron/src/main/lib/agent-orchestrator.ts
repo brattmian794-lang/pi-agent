@@ -82,6 +82,8 @@ import { createFallbackTitle, sanitizeGeneratedTitle, TITLE_PROMPT } from './tit
 import { autoGenerateSessionTitle } from './auto-title-generation'
 import { claimWorkspaceMemoryRefreshOpportunity } from './agent-memory-refresh-service'
 import { browserController } from './browser-controller'
+import { lazyExternalBrowserRun, resolveBrowserRoute, type ExternalBrowserRun } from './agent-external-browser'
+import { egoLiteSetup } from './ego-lite-setup-service'
 import { resolveRuntimeAdditionalDirectories } from './agent-orchestrator-vault-access'
 
 // ===== 类型定义 =====
@@ -95,6 +97,7 @@ import { resolveRuntimeAdditionalDirectories } from './agent-orchestrator-vault-
 type AgentRunInput = AgentSendInput & { runGeneration?: number }
 
 export interface SessionCallbacks {
+  foregroundUser?: boolean
   /** 发送流式错误 */
   onError: (error: string, opts?: { runGeneration?: number }) => void
   /** 发送流式完成（携带已持久化的消息列表） */
@@ -102,7 +105,7 @@ export interface SessionCallbacks {
   /** 发送标题更新 */
   onTitleUpdated: (title: string) => void
   /** 用户消息已持久化，外部入口可据此通知前端切到实时会话 */
-  onRunStarted?: (opts: { startedAt: number; runGeneration: number; userMessage?: string; userMessageUuid?: string }) => void
+  onRunStarted?: (opts: { startedAt: number; runGeneration: number; browserRouteLabel: string; userMessage?: string; userMessageUuid?: string }) => void
 }
 
 type RecoverableAgentQueryOptions = {
@@ -217,6 +220,7 @@ export class AgentOrchestrator {
   private adapter: AgentProviderAdapter
   private eventBus: AgentEventBus
   private activeSessions = new Map<string, number>()
+  private externalBrowsers = new Map<string, ExternalBrowserRun>()
   private activeSessionStartedAt = new Map<string, number>()
   private nextRunGenerationBySession = new Map<string, number>()
 
@@ -887,9 +891,27 @@ export class AgentOrchestrator {
     const runGeneration = input.runGeneration ?? this.reserveRunGeneration(sessionId)
     this.activeSessions.set(sessionId, runGeneration)
     this.activeSessionStartedAt.set(sessionId, streamStartedAt)
+    const foregroundUser = callbacks.foregroundUser === true && automationContext == null
+      && (input.triggeredBy == null || input.triggeredBy === 'user')
+    let externalPlanBlocked = () => true
+    const isEnabled = () => {
+      const settings = getSettings()
+      return this.activeSessions.get(sessionId) === runGeneration && !externalPlanBlocked()
+        && settings.egoLiteEnabled === true && settings.browserExecutionBackend === 'egoLite'
+    }
+    const browserRoute = resolveBrowserRoute(appSettings, app.isPackaged, process.platform, foregroundUser, Boolean(workspaceId),
+      appSettings.browserExecutionBackend === 'egoLite' ? egoLiteSetup.status().stage : 'idle')
+    const externalBrowser = workspaceId && browserRoute.backend === 'egoLite'
+      ? lazyExternalBrowserRun(async () => {
+          const { createEgoLiteRun } = await import('./ego-lite-runtime')
+          return () => createEgoLiteRun(workspaceId, sessionId, isEnabled, appSettings.egoLiteProfileMode ?? 'current')
+        }, isEnabled)
+      : undefined
+    if (externalBrowser) this.externalBrowsers.set(sessionId, externalBrowser)
     callbacks.onRunStarted?.({
       startedAt: streamStartedAt,
       runGeneration,
+      browserRouteLabel: browserRoute.label,
       ...(initialUserMessageUuid ? {
         userMessage: rawUserMessage ?? userMessage,
         userMessageUuid: initialUserMessageUuid,
@@ -901,6 +923,8 @@ export class AgentOrchestrator {
       // 主进程仍在 finally 前短暂拒绝下一条消息。
       const ownsActiveRun = this.activeSessions.get(sessionId) === runGeneration
       if (ownsActiveRun) {
+        externalBrowser?.stop()
+        this.externalBrowsers.delete(sessionId)
         this.activeSessions.delete(sessionId)
         this.activeSessionStartedAt.delete(sessionId)
         this.sessionPermissionModes.delete(sessionId)
@@ -1036,6 +1060,7 @@ export class AgentOrchestrator {
         workspaceSlug,
         agentCwd,
         allowedRoots: browserAllowedRoots,
+        externalBrowser,
         permissionMode: permissionModeOverride ?? sessionMeta?.permissionMode ?? PROMA_DEFAULT_PERMISSION_MODE,
         triggeredBy: input.triggeredBy,
         windowsShellAvailable: process.platform !== 'win32' || runtimeEnv.shellKind != null,
@@ -1061,7 +1086,7 @@ export class AgentOrchestrator {
         workspaceName: workspace?.name,
         workspaceSlug,
         agentCwd,
-        userBrowserContext: browserController.getUserContext(sessionId),
+        userBrowserContext: externalBrowser ? undefined : browserController.getUserContext(sessionId),
         userVaultContext: vaultUserContext,
       })
       // 11.5 注入 mention 引用指令（Skill/MCP/会话）— 仅影响 prompt，不影响持久化
@@ -1242,6 +1267,7 @@ export class AgentOrchestrator {
 
       /** Plan 模式是否已被 Agent 进入（初始 plan 模式时天然为 true，其他模式需 EnterPlanMode 触发） */
       let planModeEntered = initialPermissionMode === 'plan'
+      externalPlanBlocked = () => planModeEntered || getPermissionMode() === 'plan'
 
       const syncPlanModeFromToolUse = (toolName: string): void => {
         if (toolName === 'EnterPlanMode') {
@@ -1261,6 +1287,9 @@ export class AgentOrchestrator {
       // 动态 canUseTool：每次调用读取当前权限模式，支持运行中切换
       const canUseTool = async (toolName: string, input: Record<string, unknown>, options: CanUseToolOptions): Promise<PermissionResult> => {
         const currentMode = getPermissionMode()
+        if (toolName.startsWith('BrowserEgo') && externalPlanBlocked()) {
+          return { behavior: 'deny', message: '计划模式下外部浏览器观察也可能打开窗口，请在计划获批后操作。' }
+        }
 
         // ── 参数校验守卫（所有模式、所有工具，优先于权限检查） ──
         const validationFailure = validateToolInput(toolName, input)
@@ -1504,6 +1533,7 @@ export class AgentOrchestrator {
         sessionWorkbenchLayout: getSessionWorkbenchLayout(sessionMeta),
         permissionMode: initialPermissionMode,
         collaborationAvailable,
+        externalBrowser: Boolean(externalBrowser),
         currentModelId: selectedModelId,
         projectInstructions,
         projectKnowledgeMaintenanceApproved,
@@ -2243,6 +2273,8 @@ export class AgentOrchestrator {
    */
   stop(sessionId: string, stopBeforeRun = false): void | Promise<void> {
     const runGeneration = this.activeSessions.get(sessionId)
+    this.externalBrowsers.get(sessionId)?.stop()
+    this.externalBrowsers.delete(sessionId)
     this.activeSessions.delete(sessionId)
     this.activeSessionStartedAt.delete(sessionId)
     this.sessionPermissionModes.delete(sessionId)
@@ -2398,7 +2430,8 @@ export class AgentOrchestrator {
       ? getAgentWorkspace(meta.workspaceId)?.slug
       : undefined
 
-    const userBrowserContext = browserController.getUserContext(sessionId)
+    const queueGeneration = this.activeSessions.get(sessionId)
+    const userBrowserContext = this.externalBrowsers.has(sessionId) ? undefined : browserController.getUserContext(sessionId)
     const userVaultContext = getVaultUserContext(sessionId)
     // 运行中的 Agent 收到队列消息时也必须看到用户刚刚主动打开的页面。
     // 未打开浏览器时保持既有消息形态，避免给每条插队消息重复注入无关环境块。
@@ -2478,8 +2511,10 @@ export class AgentOrchestrator {
     } catch (error) {
       uuids.delete(uuid)
       this.clearPendingUserSkillActivations(sessionId, uuid)
-      if (isMissingActiveQueueChannelError(error)) {
+      if (isMissingActiveQueueChannelError(error) && this.activeSessions.get(sessionId) === queueGeneration) {
         console.warn(`[Agent 编排] 队列注入失败且消息通道已失效，释放陈旧运行状态: sessionId=${sessionId}`)
+        this.externalBrowsers.get(sessionId)?.stop()
+        this.externalBrowsers.delete(sessionId)
         this.activeSessions.delete(sessionId)
         this.activeSessionStartedAt.delete(sessionId)
         this.sessionPermissionModes.delete(sessionId)

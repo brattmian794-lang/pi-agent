@@ -71,3 +71,4 @@ export * from './vault'
 
 // 本地开发者诊断
 export * from './diagnostics'
+export * from './ego-lite-settings'

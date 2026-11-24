@@ -529,6 +529,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
   const [pendingPrompt, setPendingPrompt] = useAtom(agentPendingPromptAtom)
   const [pendingFiles, setPendingFiles] = useAtom(agentPendingFilesAtomFamily(sessionId))
   const [queuedMessages, setQueuedMessages] = useAtom(agentMessageQueueAtomFamily(sessionId))
+  const browserRoute = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))?.browserRouteLabel
   const workspaces = useAtomValue(agentWorkspacesAtom)
   const setWorkspaces = useSetAtom(agentWorkspacesAtom)
   const [restoreProjectRootDialogOpen, setRestoreProjectRootDialogOpen] = React.useState(false)
@@ -3119,6 +3120,7 @@ export function AgentView({ sessionId, embedded = false }: AgentViewProps): Reac
               </div>
             )}
 
+            {browserRoute && <p role="status" className="px-3 pt-2 text-xs text-muted-foreground">{browserRoute}</p>}
             <AgentScopedRichTextInput
               ref={richTextInputRef}
               sessionId={sessionId}

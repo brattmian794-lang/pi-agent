@@ -312,6 +312,7 @@ export async function runAgent(
   }
   try {
     await orchestrator.sendMessage(input, {
+      foregroundUser: !queueMessageId && webContents.isFocused(),
       onError: (error, opts) => {
         const target = streamRoutes.getTargetIfOwner(input.sessionId, route.ownerId)
         if (target) {
@@ -355,10 +356,10 @@ export async function runAgent(
           opts?.stoppedByUser === true,
         )
       },
-      onRunStarted: ({ startedAt, runGeneration }) => {
+      onRunStarted: ({ startedAt, runGeneration, browserRouteLabel }) => {
         eventBus.emit(input.sessionId, {
           kind: 'proma_event',
-          event: { type: 'run_started', startedAt, runGeneration },
+          event: { type: 'run_started', startedAt, runGeneration, browserRouteLabel },
         })
       },
       onTitleUpdated: (title) => {
@@ -506,7 +507,7 @@ export async function runAgentHeadless(
           })
         }
       },
-      onRunStarted: ({ startedAt: persistedStartedAt, runGeneration, userMessage, userMessageUuid }) => {
+      onRunStarted: ({ startedAt: persistedStartedAt, runGeneration, userMessage, userMessageUuid, browserRouteLabel }) => {
         const session = getAgentSessionMeta(runInput.sessionId)
         eventBus.emit(runInput.sessionId, {
           kind: 'proma_event',
@@ -519,6 +520,7 @@ export async function runAgentHeadless(
             modelId: runInput.modelId,
             startedAt: persistedStartedAt,
             runGeneration,
+            browserRouteLabel,
             ...(session ? { session } : {}),
             ...(userMessage !== undefined ? { userMessage } : {}),
             ...(userMessageUuid ? { userMessageUuid } : {}),

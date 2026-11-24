@@ -8,6 +8,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, SLACK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, PLANNING_IPC_CHANNELS, VAULT_IPC_CHANNELS, AGENT_ISLAND_IPC_CHANNELS, TERMINAL_IPC_CHANNELS } from '@proma/shared'
 import { USER_PROFILE_IPC_CHANNELS, SETTINGS_IPC_CHANNELS, SCRATCH_PAD_IPC_CHANNELS, APP_ICON_IPC_CHANNELS, DOCK_BADGE_IPC_CHANNELS, STORAGE_IPC_CHANNELS } from '../types'
+import { EGO_LITE_SETTINGS_IPC } from '@proma/shared'
+import type { EgoLiteSettings, EgoLiteSettingsChange, EgoSetupState } from '@proma/shared'
 import { DIAGNOSTIC_IPC_CHANNELS } from '@proma/shared'
 import type { DiagnosticState, DiagnosticRecordInput, DiagnosticExportResult } from '@proma/shared'
 import type {
@@ -462,6 +464,12 @@ export interface ElectronAPI {
 
   /** 获取应用设置 */
   getSettings: () => Promise<AppSettings>
+  getEgoLiteSettings: () => Promise<EgoLiteSettings | null>
+  changeEgoLiteSettings: (change: EgoLiteSettingsChange) => Promise<EgoLiteSettings>
+  probeEgoLite: () => Promise<string>
+  startEgoLiteSetup: (workspaceId?: string) => Promise<EgoSetupState>
+  cancelEgoLiteSetup: () => Promise<EgoSetupState>
+  getEgoLiteSetupStatus: () => Promise<EgoSetupState>
 
   /** 更新应用设置 */
   updateSettings: (updates: Partial<AppSettings>) => Promise<AppSettings>
@@ -1749,6 +1757,25 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.on(DIAGNOSTIC_IPC_CHANNELS.STATE_CHANGED, listener)
     return () => { ipcRenderer.removeListener(DIAGNOSTIC_IPC_CHANNELS.STATE_CHANGED, listener) }
   },
+
+  getEgoLiteSettings: () => ipcRenderer.invoke(EGO_LITE_SETTINGS_IPC.GET),
+  changeEgoLiteSettings: async (change) => {
+    if (!navigator.userActivation.isActive) throw new Error('请在设置页手动更改 Ego Lite 选项')
+    return ipcRenderer.invoke(EGO_LITE_SETTINGS_IPC.CHANGE, change)
+  },
+  probeEgoLite: async () => {
+    if (!navigator.userActivation.isActive) throw new Error('请在设置页手动检测 Ego Lite')
+    return ipcRenderer.invoke(EGO_LITE_SETTINGS_IPC.PROBE)
+  },
+  startEgoLiteSetup: async (workspaceId) => {
+    if (!process.isMainFrame || !navigator.userActivation.isActive) throw new Error('请在设置页手动启动 Ego Lite 准备')
+    return ipcRenderer.invoke(EGO_LITE_SETTINGS_IPC.START, workspaceId)
+  },
+  cancelEgoLiteSetup: async () => {
+    if (!process.isMainFrame || !navigator.userActivation.isActive) throw new Error('请在设置页手动取消 Ego Lite 准备')
+    return ipcRenderer.invoke(EGO_LITE_SETTINGS_IPC.CANCEL)
+  },
+  getEgoLiteSetupStatus: () => ipcRenderer.invoke(EGO_LITE_SETTINGS_IPC.STATUS),
 
   getSettings: () => {
     return ipcRenderer.invoke(SETTINGS_IPC_CHANNELS.GET)

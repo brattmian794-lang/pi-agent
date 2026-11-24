@@ -81,6 +81,7 @@ export interface AgentRetryState {
 
 /** Agent 会话的流式状态 */
 export interface AgentStreamState {
+  browserRouteLabel?: string
   running: boolean
   /**
    * 后台任务等待态（软空闲）：本轮主体已结束、UI 可输入，但 SDK 通道仍开着等后台任务唤醒。
