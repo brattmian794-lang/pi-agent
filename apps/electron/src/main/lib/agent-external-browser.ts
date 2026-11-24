@@ -1,3 +1,4 @@
+import { isEgoLitePlatformSupported } from './ego-lite-settings-policy'
 import { egoLiteAuthorizationSignal } from './ego-lite-revocation'
 import type { createEgoLiteRun, EgoAction } from './ego-lite-runtime'
 import { isEgoSetupActive, type EgoSetupState } from '@proma/shared'
@@ -5,16 +6,16 @@ import { isEgoSetupActive, type EgoSetupState } from '@proma/shared'
 export type ExternalBrowserAction = EgoAction
 export type ExternalBrowserRun = ReturnType<typeof createEgoLiteRun>
 
-export function selectExternalBrowser(settings: { egoLiteEnabled?: boolean; browserExecutionBackend?: string }, packaged: boolean, platform: NodeJS.Platform, foregroundUser: boolean): boolean {
+export function selectExternalBrowser(settings: { egoLiteEnabled?: boolean; browserExecutionBackend?: string }, platform: NodeJS.Platform, arch: string, foregroundUser: boolean): boolean {
   return settings.egoLiteEnabled === true && settings.browserExecutionBackend === 'egoLite'
-    && !packaged && (platform === 'win32' || platform === 'darwin') && foregroundUser
+    && isEgoLitePlatformSupported(platform, arch) && foregroundUser
 }
 
-export function resolveBrowserRoute(settings: Parameters<typeof selectExternalBrowser>[0], packaged: boolean, platform: NodeJS.Platform, foregroundUser: boolean, hasWorkspace: boolean, stage: EgoSetupState['stage']): { backend: 'builtin' | 'egoLite'; label: string } {
+export function resolveBrowserRoute(settings: Parameters<typeof selectExternalBrowser>[0], platform: NodeJS.Platform, arch: string, foregroundUser: boolean, hasWorkspace: boolean, stage: EgoSetupState['stage']): { backend: 'builtin' | 'egoLite'; label: string } {
   const builtin = (reason?: string) => ({ backend: 'builtin' as const, label: reason ? `本轮网页后端：内置（${reason}）` : '本轮网页后端：内置' })
   if (settings.browserExecutionBackend !== 'egoLite') return builtin()
   if (!settings.egoLiteEnabled) return builtin('Ego Lite 未启用')
-  if (packaged || (platform !== 'win32' && platform !== 'darwin')) return builtin('当前版本不支持 Ego Lite')
+  if (!isEgoLitePlatformSupported(platform, arch)) return builtin('当前平台或架构不支持 Ego Lite')
   if (!foregroundUser) return builtin('Ego Lite 仅用于直接发起的前台运行')
   if (!hasWorkspace) return builtin('当前会话没有工作区')
   if (isEgoSetupActive(stage)) return builtin('Ego Lite 正在准备或复检')

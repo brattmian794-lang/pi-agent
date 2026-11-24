@@ -1,5 +1,18 @@
+import { pathToFileURL } from 'node:url'
 import { isEgoSetupActive } from '@proma/shared'
 import type { EgoLiteSettings, EgoSetupState } from '@proma/shared'
+
+
+export function isEgoLitePlatformSupported(platform: NodeJS.Platform, arch: string): boolean {
+  return (platform === 'win32' && arch === 'x64') ||
+    (platform === 'darwin' && (arch === 'arm64' || arch === 'x64'))
+}
+
+export function isEgoLiteSettingsPageUrl(url: string, packaged: boolean, rendererPath: string): boolean {
+  const pageUrl = url.split('#', 1)[0]
+  const expectedUrl = packaged ? pathToFileURL(rendererPath).href : 'http://127.0.0.1:5173/'
+  return pageUrl === expectedUrl
+}
 
 export function normalizeEgoLiteSettings(input: { egoLiteEnabled?: unknown; browserExecutionBackend?: unknown; egoLiteProfileMode?: unknown }, eligible: boolean): EgoLiteSettings {
   const egoLiteEnabled = eligible && input.egoLiteEnabled === true

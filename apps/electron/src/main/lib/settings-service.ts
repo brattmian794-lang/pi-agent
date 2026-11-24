@@ -7,9 +7,8 @@
 
 import { readFileSync, existsSync } from 'node:fs'
 import { writeJsonFileAtomic } from './safe-file'
-import { app } from 'electron'
 import { revokeEgoLiteRuns } from './ego-lite-revocation'
-import { normalizeEgoLiteSettings } from './ego-lite-settings-policy'
+import { isEgoLitePlatformSupported, normalizeEgoLiteSettings } from './ego-lite-settings-policy'
 import type { EgoLiteSettings } from '@proma/shared'
 import { getSettingsPath } from './config-paths'
 import { DEFAULT_THEME_MODE, normalizeProductivityToolsSettings } from '../../types'
@@ -17,8 +16,7 @@ import type { AgentIslandSettings, AppSettings } from '../../types'
 import { getTerminalProfilesForPlatform, isTerminalProfile } from '@proma/shared'
 
 export function isEgoLiteEligible(): boolean {
-  return app?.isPackaged === false && ((process.platform === 'win32' && process.arch === 'x64') ||
-    (process.platform === 'darwin' && ['arm64', 'x64'].includes(process.arch)))
+  return isEgoLitePlatformSupported(process.platform, process.arch)
 }
 
 export function effectiveEgoLiteSettings(settings: Partial<AppSettings>): EgoLiteSettings {

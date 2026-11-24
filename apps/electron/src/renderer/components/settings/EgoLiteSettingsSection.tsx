@@ -93,7 +93,7 @@ export function EgoLiteSettingsSection(): React.ReactElement | null {
 
   if (!settings && !error) return null
   return (
-    <SettingsSection title="浏览器执行后端" description="开发环境试用。Ego Lite 使用外部窗口，默认仍使用内置浏览器。">
+    <SettingsSection title="浏览器执行后端" description="Ego Lite 使用外部窗口；默认仍使用内置浏览器。">
       <SettingsCard>
         {settings && <>
           <SettingsToggle label="启用 Ego Lite" description="开启即授权自动检测、下载和安装 Ego Lite。关闭会取消准备并恢复内置浏览器。"

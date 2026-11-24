@@ -899,7 +899,7 @@ export class AgentOrchestrator {
       return this.activeSessions.get(sessionId) === runGeneration && !externalPlanBlocked()
         && settings.egoLiteEnabled === true && settings.browserExecutionBackend === 'egoLite'
     }
-    const browserRoute = resolveBrowserRoute(appSettings, app.isPackaged, process.platform, foregroundUser, Boolean(workspaceId),
+    const browserRoute = resolveBrowserRoute(appSettings, process.platform, process.arch, foregroundUser, Boolean(workspaceId),
       appSettings.browserExecutionBackend === 'egoLite' ? egoLiteSetup.status().stage : 'idle')
     const externalBrowser = workspaceId && browserRoute.backend === 'egoLite'
       ? lazyExternalBrowserRun(async () => {

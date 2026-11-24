@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
-import { assertGenericSettingsUpdate, egoLiteSettingsChange, normalizeEgoLiteSettings } from './ego-lite-settings-policy'
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { assertGenericSettingsUpdate, egoLiteSettingsChange, isEgoLitePlatformSupported, isEgoLiteSettingsPageUrl, normalizeEgoLiteSettings } from './ego-lite-settings-policy'
 
 const builtin = { egoLiteEnabled: false, browserExecutionBackend: 'builtin', egoLiteProfileMode: 'current' } as const
 const ego = { egoLiteEnabled: true, browserExecutionBackend: 'egoLite', egoLiteProfileMode: 'current' } as const
@@ -32,9 +34,26 @@ describe('Ego Lite 设置边界', () => {
     }
   })
 
-  test('打包环境忽略保存的开发偏好', () => {
-    expect(normalizeEgoLiteSettings(ego, false)).toEqual(builtin)
+  test('支持的正式版目标平台可启用 Ego Lite 设置', () => {
+    for (const [platform, arch] of [['win32', 'x64'], ['darwin', 'arm64'], ['darwin', 'x64']] as const) {
+      expect(isEgoLitePlatformSupported(platform, arch)).toBe(true)
+      expect(normalizeEgoLiteSettings(ego, isEgoLitePlatformSupported(platform, arch))).toEqual(ego)
+    }
+    expect(isEgoLitePlatformSupported('linux', 'x64')).toBe(false)
+    expect(isEgoLitePlatformSupported('win32', 'arm64')).toBe(false)
+    expect(isEgoLitePlatformSupported('darwin', 'arm')).toBe(false)
   })
+
+  test('设置 IPC 只接受开发主窗口或精确的正式版 renderer 文件 URL', () => {
+    const rendererPath = resolve('dist', 'renderer', 'index.html')
+    const packagedUrl = pathToFileURL(rendererPath).href
+    expect(isEgoLiteSettingsPageUrl('http://127.0.0.1:5173/#settings', false, rendererPath)).toBe(true)
+    expect(isEgoLiteSettingsPageUrl('http://localhost:5173/', false, rendererPath)).toBe(false)
+    expect(isEgoLiteSettingsPageUrl(`${packagedUrl}#settings`, true, rendererPath)).toBe(true)
+    expect(isEgoLiteSettingsPageUrl(pathToFileURL(resolve('other.html')).href, true, rendererPath)).toBe(false)
+    expect(isEgoLiteSettingsPageUrl('https://example.com/', true, rendererPath)).toBe(false)
+  })
+
 
   test('通用更新拒绝敏感字段，包括混合请求，继续接受普通设置', () => {
     expect(() => assertGenericSettingsUpdate({ themeMode: 'dark' })).not.toThrow()

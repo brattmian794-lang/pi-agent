@@ -7,22 +7,24 @@ import type { ExternalBrowserAction } from './agent-external-browser'
 const observe = { kind: 'observe' } as const
 
 describe('选定 Ego Lite 的一次运行', () => {
-  it('仅开关和后端均选中时允许开发版 Windows / macOS 前台运行', () => {
+  it('开发版与正式版均允许受支持平台架构的显式前台选择', () => {
     const selected = { egoLiteEnabled: true, browserExecutionBackend: 'egoLite' }
-    expect(selectExternalBrowser(selected, false, 'darwin', true)).toBe(true)
-    expect(selectExternalBrowser(selected, false, 'win32', true)).toBe(true)
-    expect(selectExternalBrowser(selected, true, 'win32', true)).toBe(false)
-    expect(selectExternalBrowser(selected, false, 'linux', true)).toBe(false)
-    expect(selectExternalBrowser(selected, false, 'darwin', false)).toBe(false)
+    expect(selectExternalBrowser(selected, 'darwin', 'arm64', true)).toBe(true)
+    expect(selectExternalBrowser(selected, 'win32', 'x64', true)).toBe(true)
+    expect(selectExternalBrowser(selected, 'linux', 'x64', true)).toBe(false)
+    expect(selectExternalBrowser(selected, 'win32', 'arm64', true)).toBe(false)
+    expect(selectExternalBrowser(selected, 'darwin', 'arm64', false)).toBe(false)
     for (const settings of [{}, { ...selected, egoLiteEnabled: false }, { ...selected, browserExecutionBackend: 'builtin' }]) {
-      expect(selectExternalBrowser(settings, false, 'darwin', true)).toBe(false)
+      expect(selectExternalBrowser(settings, 'darwin', 'arm64', true)).toBe(false)
     }
+    expect(resolveBrowserRoute(selected, 'win32', 'x64', true, true, 'ready').backend).toBe('egoLite')
+    expect(resolveBrowserRoute(selected, 'win32', 'arm64', true, true, 'ready').label).toContain('架构不支持')
   })
 
   it('复检中的新运行暂用内置，复检完成后仍按同一偏好使用 Ego Lite', () => {
     const preference = Object.freeze({ egoLiteEnabled: true, browserExecutionBackend: 'egoLite' })
     const resolve = (stage: 'configuring' | 'ready' | 'failed' | 'cancelled') =>
-      resolveBrowserRoute(preference, false, 'win32', true, true, stage)
+      resolveBrowserRoute(preference, 'win32', 'x64', true, true, stage)
     expect(resolve('configuring')).toMatchObject({ backend: 'builtin', label: expect.stringContaining('复检') })
     expect(resolve('failed')).toMatchObject({ backend: 'builtin', label: expect.stringContaining('未就绪') })
     expect(resolve('cancelled').backend).toBe('builtin')
@@ -31,9 +33,9 @@ describe('选定 Ego Lite 的一次运行', () => {
 
   it('后台或无工作区的运行明确标出内置后端及原因', () => {
     const preference = { egoLiteEnabled: true, browserExecutionBackend: 'egoLite' }
-    expect(resolveBrowserRoute(preference, false, 'win32', false, true, 'ready')).toMatchObject({ backend: 'builtin', label: expect.stringContaining('前台运行') })
-    expect(resolveBrowserRoute(preference, false, 'win32', true, false, 'ready')).toMatchObject({ backend: 'builtin', label: expect.stringContaining('没有工作区') })
-    expect(resolveBrowserRoute({}, false, 'win32', true, true, 'ready').backend).toBe('builtin')
+    expect(resolveBrowserRoute(preference, 'win32', 'x64', false, true, 'ready')).toMatchObject({ backend: 'builtin', label: expect.stringContaining('前台运行') })
+    expect(resolveBrowserRoute(preference, 'win32', 'x64', true, false, 'ready')).toMatchObject({ backend: 'builtin', label: expect.stringContaining('没有工作区') })
+    expect(resolveBrowserRoute({}, 'win32', 'x64', true, true, 'ready').backend).toBe('builtin')
   })
 
   it('给定非浏览器任务，不加载 runtime；首次动作才创建句柄，结束后仅释放一次', async () => {

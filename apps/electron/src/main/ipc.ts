@@ -10,7 +10,7 @@ import { EGO_LITE_SETTINGS_IPC, isEgoSetupActive } from '@proma/shared'
 import { egoLiteSetup } from './lib/ego-lite-setup-service'
 import { revokeEgoLiteRuns } from './lib/ego-lite-revocation'
 import { probeEgoLite } from './lib/ego-lite-runtime'
-import { assertGenericSettingsUpdate, egoLiteSettingsChange } from './lib/ego-lite-settings-policy'
+import { assertGenericSettingsUpdate, egoLiteSettingsChange, isEgoLiteSettingsPageUrl } from './lib/ego-lite-settings-policy'
 import { isEgoLiteEligible, effectiveEgoLiteSettings } from './lib/settings-service'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { existsSync, realpathSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
@@ -2211,9 +2211,10 @@ export function registerIpcHandlers(): void {
   const assertEgoLiteSettingsSender = (event: Electron.IpcMainInvokeEvent): void => {
     const contents = getMainWindow()?.webContents
     const frame = event.senderFrame
+    const rendererPath = join(__dirname, 'renderer', 'index.html')
     if (!isEgoLiteEligible() || !contents || !frame || event.sender !== contents ||
-        frame !== contents.mainFrame || frame.url.split('#')[0] !== 'http://127.0.0.1:5173/') {
-      throw new Error('Ego Lite 仅限开发环境的通用设置页使用')
+        frame !== contents.mainFrame || !isEgoLiteSettingsPageUrl(frame.url, app.isPackaged, rendererPath)) {
+      throw new Error('Ego Lite 设置仅允许由主窗口通用设置页操作')
     }
   }
   ipcMain.handle(EGO_LITE_SETTINGS_IPC.GET, (event) => {
