@@ -4355,6 +4355,13 @@ export function registerIpcHandlers(): void {
       const options = normalizeFileAccessOptions(access)
       const result = resolveMarkdownRelativeMediaPath(markdownFilePath, src, options)
       if (!result) return null
+      // 同 file:resolve-path：文档里的相对源可能指向目录，先区分文件再注册，
+      // 避免把「目录不是文件」这条正常情况记成告警。
+      try {
+        if (!statSync(result).isFile()) return null
+      } catch {
+        return null
+      }
       try {
         return { url: registerPromaFilePath(result) }
       } catch (err) {
@@ -4371,12 +4378,19 @@ export function registerIpcHandlers(): void {
       const options = normalizeFileAccessOptions(access)
       const result = await resolveAuthorizedPreviewPath(filePath, options)
       if (!result) return null
-      // registerPromaFilePath 对目录路径会抛「不是文件」。渲染端（如悬浮预览解析 markdown
-      // 链接）可能传入目录路径，此处优雅降级为 null，而不是让异常冒泡成未捕获的 handler 错误。
+      // 渲染端（如 markdown 图片/链接解析）会传入目录路径。这里是「非文件」的正常
+      // 分支：先区分文件与目录，避免让 registerPromaFilePath 抛『不是文件』再逐条告警。
+      let isFile = false
+      try {
+        isFile = statSync(result).isFile()
+      } catch {
+        isFile = false
+      }
+      if (!isFile) return null
       try {
         return { url: registerPromaFilePath(result), resolvedPath: result }
       } catch (err) {
-        console.warn('[IPC] file:resolve-path 无法注册为文件，跳过:', result, err instanceof Error ? err.message : err)
+        console.warn('[IPC] file:resolve-path 注册文件失败:', result, err instanceof Error ? err.message : err)
         return null
       }
     }
@@ -4390,6 +4404,12 @@ export function registerIpcHandlers(): void {
       const options = normalizeFileAccessOptions(access)
       const result = await resolveAuthorizedPreviewPath(filePath, options)
       if (!result) return null
+      // HTML 预览只针对文件本身：目录不是可预览对象，先区分再注册，避免无意义告警。
+      try {
+        if (!statSync(result).isFile()) return null
+      } catch {
+        return null
+      }
       try {
         const parentDir = dirname(result)
         // 单文件附件只授权该文件本身，不能因 HTML 预览而将父目录整体注册为 URL 根；

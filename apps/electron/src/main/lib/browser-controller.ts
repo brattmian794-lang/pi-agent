@@ -6,13 +6,13 @@ import { AGENT_IPC_CHANNELS } from '@proma/shared'
 import { assertSafeBrowserDestination, assertSafeBrowserDestinationWithFallback, assertSafeBrowserDownloadUrl, assertSafeBrowserUrl, isSupportedBrowserPopupUrl, isTransientBrowserPopupUrl, USER_NEW_TAB_URL } from './browser-policy'
 import { createAuthorizedPreviewUrl, isAuthorizedPreviewProtocol } from './browser-preview-service'
 import { handlePromaFileRequest } from './local-file-protocol'
-import { BrowserCdpTimeoutError, BrowserOperationAbortedError, BROWSER_OBSERVE_TIMEOUT_MS, resolveBrowserObserveAxDepth, throwIfBrowserOperationAborted, withBrowserCdpTimeout } from './browser-cdp'
+import { BrowserCdpTimeoutError, BrowserFailureDeduper, BrowserOperationAbortedError, BROWSER_CDP_COMMAND_TIMEOUT_MS, BROWSER_OBSERVE_TIMEOUT_MS, describeBrowserNavigationFailure, describeBrowserScriptFailure, resolveBrowserObserveAxDepth, throwIfBrowserOperationAborted, withBrowserCdpTimeout } from './browser-cdp'
 import { parseBrowserPressAction } from './browser-key-policy'
 import { browserObservationNameLimit, prioritizeBrowserObservationCandidates, resolveBrowserObserveMaxElements } from './browser-observation-policy'
 import { buildPersistentBrowserPartition, resolveBrowserProfileKey } from './browser-profile-policy'
 import { canBrowserSessionTakeForeground, isNewBrowserTabLayoutRevision } from './browser-presentation-policy'
 import { hasAcknowledgedBrowserRiskDisclaimer } from './browser-risk-disclaimer'
-import { buildPromaBrowserUserAgent } from './browser-identity'
+import { buildPiAgentBrowserUserAgent } from './browser-identity'
 import {
   assertBrowserExtract,
   assertBrowserScript,
@@ -40,6 +40,28 @@ const ACTION_HIGHLIGHT_DURATION_MS = 900
 const MAX_BROWSER_SCRIPT_RESULT_CHARS = 64_000
 /** 国内网络下默认 Google 新标签页/搜索等待此时长后转向 Bing。 */
 const GOOGLE_DEFAULT_LOAD_TIMEOUT_MS = 3_000
+
+/**
+ * 受管浏览器各条 CDP/加载命令的超时预算。默认值即生产取值；
+ * 集中成一处便于测试注入更短的预算，验证超时语义而不必真的等 8 秒。
+ */
+export interface BrowserControllerTiming {
+  /** 单条 CDP 命令的默认超时。 */
+  commandTimeoutMs: number
+  /** 页面观察（可访问性快照）超时。 */
+  observeTimeoutMs: number
+  /** 页面导航/截图等待的加载预算。 */
+  navigationTimeoutMs: number
+  /** 首屏打开 Google 时等待主框架就绪的预算。 */
+  googleDefaultLoadTimeoutMs: number
+}
+
+const DEFAULT_BROWSER_CONTROLLER_TIMING: BrowserControllerTiming = {
+  commandTimeoutMs: BROWSER_CDP_COMMAND_TIMEOUT_MS,
+  observeTimeoutMs: BROWSER_OBSERVE_TIMEOUT_MS,
+  navigationTimeoutMs: BROWSER_OBSERVE_TIMEOUT_MS + 3_000,
+  googleDefaultLoadTimeoutMs: GOOGLE_DEFAULT_LOAD_TIMEOUT_MS,
+}
 
 /** 下载文件名脱敏：去掉控制字符与路径穿越，替换 Windows 非法字符，兜底默认名，避免写入 Downloads 之外的路径。 */
 function sanitizeDownloadFilename(raw: string): string {
@@ -215,12 +237,14 @@ function describeBrowserScriptException(response: CdpResponse): string {
 }
 
 export class BrowserController {
+  constructor(private readonly timing: BrowserControllerTiming = DEFAULT_BROWSER_CONTROLLER_TIMING) {}
+
   private owner: BrowserWindow | null = null
   private readonly sessions = new Map<string, BrowserSessionRecord>()
   private readonly configurations = new Map<string, BrowserSessionConfiguration>()
   /** Electron persistent partition 生命周期长于 Agent session；同一 Session 只安装一次网络 guard。 */
   private readonly guardedSessions = new WeakSet<Session>()
-  /** 下载事件属于 Electron Session，不能随 Proma 会话重复注册或闭包捕获已关闭的会话。 */
+  /** 下载事件属于 Electron Session，不能随 pi-agent 会话重复注册或闭包捕获已关闭的会话。 */
   private readonly downloadGuardedSessions = new WeakSet<Session>()
   /** 自定义 partition 不继承 default session 的协议处理器，必须单独注册本地预览协议。 */
   private readonly previewProtocolSessions = new WeakSet<Session>()
@@ -230,6 +254,13 @@ export class BrowserController {
   private foregroundPresentationSessionId: string | null = null
   /** 最近一次切换前台 Session 的 show 代际，用于拒绝晚到的旧 Session show。 */
   private latestForegroundPresentationRevision = 0
+  /** 操作高亮失败按原因去重，避免同一个 CDP 域错误随每次 Agent 动作重复打印。 */
+  private readonly reportedHighlightFailures = new BrowserFailureDeduper()
+
+  /** 首屏转向 Bing 的等待秒数，跟随可注入的加载预算，保证 trace 文案与实际等待一致。 */
+  private get googleFallbackSeconds(): number {
+    return Math.max(1, Math.round(this.timing.googleDefaultLoadTimeoutMs / 1_000))
+  }
 
   configureSession(sessionId: string, input: ConfigureBrowserSessionInput): void {
     const previous = this.configurations.get(sessionId)
@@ -375,8 +406,8 @@ export class BrowserController {
       tab.state.url = contents.getURL()
       tab.state.title = contents.getTitle() || '未命名页面'
       tab.state.loading = contents.isLoading()
-      tab.state.canGoBack = contents.canGoBack()
-      tab.state.canGoForward = contents.canGoForward()
+      tab.state.canGoBack = contents.navigationHistory.canGoBack()
+      tab.state.canGoForward = contents.navigationHistory.canGoForward()
     } catch {
       // The WebContents may be destroyed between the lifecycle check and the read.
       return
@@ -478,7 +509,7 @@ export class BrowserController {
     browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
     browserSession.setCertificateVerifyProc((_request, callback) => {
       // 受管浏览器面向用户明确打开的网页；内网自签名证书和企业 CA 由用户自行负责，
-      // 仅在该浏览器 Session 内放行，不影响 Proma 主窗口或其他 Electron Session。
+      // 仅在该浏览器 Session 内放行，不影响 pi-agent 主窗口或其他 Electron Session。
       callback(0)
     })
     browserSession.webRequest.onBeforeRequest((details, callback) => {
@@ -495,7 +526,7 @@ export class BrowserController {
   }
 
   /**
-   * 下载事件属于 Electron Session，而 workspace profile 会被多个 Proma 会话复用。
+   * 下载事件属于 Electron Session，而 workspace profile 会被多个 pi-agent 会话复用。
    * 因而监听器只注册一次；每次触发时再用 WebContents 找到仍存活的来源 tab，避免
    * 关闭会话遗留的 handler 重复 pause/resume/cancel 同一个 DownloadItem。
    */
@@ -540,7 +571,7 @@ export class BrowserController {
       })
   }
 
-  /** 从共享 Electron Session 的所有当前 Proma 会话中定位下载来源，绝不保留过期会话引用。 */
+  /** 从共享 Electron Session 的所有当前 pi-agent 会话中定位下载来源，绝不保留过期会话引用。 */
   private findManagedDownloadOrigin(electronBrowserSession: Session, webContents: WebContents): { browserSession: BrowserSessionRecord; tab: BrowserTabRecord } | null {
     for (const browserSession of this.sessions.values()) {
       if (browserSession.browserSession !== electronBrowserSession) continue
@@ -567,8 +598,8 @@ export class BrowserController {
     const profileKey = configuration?.profileKey ?? resolveBrowserProfileKey(undefined, sessionId)
     const partition = buildPersistentBrowserPartition(profileKey)
     const browserSession = electronSession.fromPartition(partition)
-    // 默认 UA 会暴露 Electron；受管网页改为诚实的 Proma 标识，并保留 Chromium token 保证站点兼容。
-    browserSession.setUserAgent(buildPromaBrowserUserAgent(browserSession.getUserAgent(), app.getVersion()))
+    // 默认 UA 会暴露 Electron；受管网页改为诚实的 pi-agent 标识，并保留 Chromium token 保证站点兼容。
+    browserSession.setUserAgent(buildPiAgentBrowserUserAgent(browserSession.getUserAgent(), app.getVersion()))
     const record: BrowserSessionRecord = {
       sessionId,
       partition,
@@ -635,7 +666,7 @@ export class BrowserController {
       let popup: BrowserTabRecord | null = null
       return {
         action: 'allow',
-        // Proma 将 window.open 呈现为同级浏览器 Tab；关闭来源页面不能级联关闭它。
+        // pi-agent 将 window.open 呈现为同级浏览器 Tab；关闭来源页面不能级联关闭它。
         outlivesOpener: true,
         createWindow: (options) => {
           popup = this.createTab(browserSession, false, false, {
@@ -748,34 +779,52 @@ export class BrowserController {
       return await withBrowserCdpTimeout(
         () => debuggerClient.sendCommand(method, params) as Promise<CdpResponse>,
         method,
-        timeoutMs,
+        timeoutMs ?? this.timing.commandTimeoutMs,
         signal,
       )
     } catch (error) {
-      if (error instanceof BrowserCdpTimeoutError) this.recoverDebugger(tab, method)
+      if (error instanceof BrowserCdpTimeoutError) this.recoverDebugger(tab, error)
       throw error
     }
   }
 
-  private recoverDebugger(tab: BrowserTabRecord, timedOutMethod: string): void {
+  private recoverDebugger(tab: BrowserTabRecord, timeoutError: BrowserCdpTimeoutError): void {
     // 重连会使所有 backend node/ref 的有效性不可判定。
     this.invalidateTabDocument(tab)
     const debuggerClient = tab.view.webContents.debugger
     try {
       if (debuggerClient.isAttached()) debuggerClient.detach()
       debuggerClient.attach('1.3')
-      console.warn(`[受管浏览器] CDP ${timedOutMethod} 超时，已重连调试通道。`)
+      // 只说明通道已重建；超时命令本身没有结果，不能把重连当成功。
+      console.warn(`[受管浏览器] CDP ${timeoutError.method} 超时（${timeoutError.timeoutMs}ms，结果未知）；已重连调试通道，通道是否可用需下一次命令确认。`)
     } catch (error) {
-      console.warn(`[受管浏览器] CDP ${timedOutMethod} 超时后无法重连调试通道:`, error)
+      console.warn(`[受管浏览器] CDP ${timeoutError.method} 超时（${timeoutError.timeoutMs}ms，结果未知）；重连调试通道失败，后续操作会继续报错:`, error)
     }
+  }
+
+  /**
+   * 高亮专用的 CDP 通道：高亮只是装饰，绝不能走 this.cdp。
+   * this.cdp 超时会重连调试通道并使当前 ref 全部失效，反过来打断正在执行的动作。
+   */
+  private async highlightCommand(tab: BrowserTabRecord, method: string, params?: Record<string, unknown>): Promise<CdpResponse> {
+    const debuggerClient = tab.view.webContents.debugger
+    if (!debuggerClient.isAttached()) throw new Error('浏览器调试通道不可用。')
+    return withBrowserCdpTimeout(
+      () => debuggerClient.sendCommand(method, params) as Promise<CdpResponse>,
+      method,
+      this.timing.commandTimeoutMs,
+    )
   }
 
   /** 通过 CDP Overlay 渲染临时高亮，不向第三方页面注入脚本或修改 DOM。 */
   private async highlightAgentTarget(tab: BrowserTabRecord, backendNodeId: number): Promise<void> {
     if (tab.highlightTimer) clearTimeout(tab.highlightTimer)
     try {
-      await this.cdp(tab, 'Overlay.enable')
-      await this.cdp(tab, 'Overlay.highlightNode', {
+      // Overlay 节点高亮依赖 DOM 域；未先启用 DOM 时 Chromium 会报
+      // "DOM should be enabled first"，高亮在所有动作里都会失败。
+      await this.highlightCommand(tab, 'DOM.enable')
+      await this.highlightCommand(tab, 'Overlay.enable')
+      await this.highlightCommand(tab, 'Overlay.highlightNode', {
         backendNodeId,
         highlightConfig: {
           showInfo: false,
@@ -785,10 +834,13 @@ export class BrowserController {
       })
       tab.highlightTimer = setTimeout(() => {
         tab.highlightTimer = undefined
-        void this.cdp(tab, 'Overlay.hideHighlight').catch(() => undefined)
+        void this.highlightCommand(tab, 'Overlay.hideHighlight').catch(() => undefined)
       }, ACTION_HIGHLIGHT_DURATION_MS)
     } catch (error) {
-      console.warn('[受管浏览器] 无法渲染 Agent 操作高亮:', error)
+      // 高亮只是可视反馈：失败不中断 Agent 动作，同一原因只记录一次。
+      if (this.reportedHighlightFailures.shouldReport(error)) {
+        console.warn('[受管浏览器] 无法渲染 Agent 操作高亮（不影响本次操作）:', error)
+      }
     }
   }
 
@@ -807,7 +859,15 @@ export class BrowserController {
       && browserSession.agentTabId !== activeTab.tabId
       && !activeTab.openedByAgent
       && (activeTab.state.url === '' || activeTab.state.url === 'about:blank')) {
-      return this.navigateDisplay(sessionId, USER_NEW_TAB_URL, activeTab.tabId)
+      try {
+        return await this.navigateDisplay(sessionId, USER_NEW_TAB_URL, activeTab.tabId)
+      } catch (error) {
+        // 标签本身已创建；首屏加载超时不该让侧栏判定“打开失败”，否则用户重试会叠加新标签。
+        if (!(error instanceof BrowserCdpTimeoutError)) throw error
+        console.warn(`[受管浏览器] 打开标签时首屏加载超时（${error.timeoutMs}ms），标签已创建，可稍后重新加载。`)
+        this.emit(browserSession)
+        return structuredClone(this.buildState(browserSession))
+      }
     }
     this.emit(browserSession)
     return structuredClone(this.buildState(browserSession))
@@ -1165,7 +1225,14 @@ export class BrowserController {
           this.updateNavigationState(browserSession, tab)
           return structuredClone(this.buildState(browserSession))
         } catch (error) {
-          this.trace(browserSession, tab, 'navigate', error instanceof BrowserOperationAbortedError ? '本地预览已停止，结果未知' : '本地预览加载失败', error instanceof BrowserOperationAbortedError ? 'unknown' : 'failed')
+          // 本地文件加载同样要区分“命令超时/结果未知”和“已确认的加载失败”。
+          const { status } = describeBrowserNavigationFailure('本地预览', error)
+          const summary = status === 'failed'
+            ? '本地预览加载失败'
+            : error instanceof BrowserOperationAbortedError
+              ? '本地预览已停止，结果未知'
+              : '本地预览加载超时：命令已超时，结果未知，请重新打开预览确认'
+          this.trace(browserSession, tab, 'navigate', summary, status)
           throw error
         }
       }, releaseAgentOperation)
@@ -1175,12 +1242,12 @@ export class BrowserController {
     }
   }
 
-  private async loadUrl(tab: BrowserTabRecord, url: string, signal?: AbortSignal, timeoutMs = BROWSER_OBSERVE_TIMEOUT_MS + 3_000): Promise<void> {
+  private async loadUrl(tab: BrowserTabRecord, url: string, signal?: AbortSignal, timeoutMs = this.timing.navigationTimeoutMs): Promise<void> {
     throwIfBrowserOperationAborted(signal)
     await withBrowserCdpTimeout(() => tab.view.webContents.loadURL(url), 'Page.navigate', timeoutMs, signal)
   }
 
-  private async loadUrlUntilMainFrameReady(tab: BrowserTabRecord, url: string, signal?: AbortSignal, timeoutMs = GOOGLE_DEFAULT_LOAD_TIMEOUT_MS): Promise<void> {
+  private async loadUrlUntilMainFrameReady(tab: BrowserTabRecord, url: string, signal?: AbortSignal, timeoutMs = this.timing.googleDefaultLoadTimeoutMs): Promise<void> {
     throwIfBrowserOperationAborted(signal)
     const contents = tab.view.webContents
     await withBrowserCdpTimeout(() => new Promise<void>((resolve, reject) => {
@@ -1239,11 +1306,13 @@ export class BrowserController {
         try {
           const result = await this.loadUrlWithFallback(tab, destination.url, destination.fallbackUrl, operationSignal)
           const loadedHost = new URL(result.loadedUrl).host
-          this.trace(browserSession, tab, 'navigate', result.usedFallback ? `Google 在 3 秒内未响应，已改用 ${loadedHost}` : `已打开 ${loadedHost}`, 'verified')
+          this.trace(browserSession, tab, 'navigate', result.usedFallback ? `Google 在 ${this.googleFallbackSeconds} 秒内未响应，已改用 ${loadedHost}` : `已打开 ${loadedHost}`, 'verified')
           this.updateNavigationState(browserSession, tab)
           return structuredClone(this.buildState(browserSession))
         } catch (error) {
-          this.trace(browserSession, tab, 'navigate', error instanceof BrowserOperationAbortedError ? `打开 ${host} 已停止，结果未知` : `无法打开 ${host}`, error instanceof BrowserOperationAbortedError ? 'unknown' : 'failed')
+          // 命令超时、用户停止、页面加载失败必须给出三种可区分的 trace 状态。
+          const failure = describeBrowserNavigationFailure(host, error)
+          this.trace(browserSession, tab, 'navigate', failure.summary, failure.status)
           throw error
         }
       }, releaseAgentOperation)
@@ -1267,11 +1336,12 @@ export class BrowserController {
       try {
         const result = await this.loadUrlWithFallback(tab, destination.url, destination.fallbackUrl)
         const loadedHost = new URL(result.loadedUrl).host
-        this.trace(browserSession, tab, 'navigate', result.usedFallback ? `Google 在 3 秒内未响应，已改用 ${loadedHost}` : `已打开 ${loadedHost}`, 'verified')
+        this.trace(browserSession, tab, 'navigate', result.usedFallback ? `Google 在 ${this.googleFallbackSeconds} 秒内未响应，已改用 ${loadedHost}` : `已打开 ${loadedHost}`, 'verified')
         this.updateNavigationState(browserSession, tab)
         return structuredClone(this.buildState(browserSession))
       } catch (error) {
-        this.trace(browserSession, tab, 'navigate', `无法打开 ${host}`, 'failed')
+        const failure = describeBrowserNavigationFailure(host, error)
+        this.trace(browserSession, tab, 'navigate', failure.summary, failure.status)
         throw error
       }
     })
@@ -1281,7 +1351,7 @@ export class BrowserController {
     const browserSession = this.getOrCreateSession(sessionId)
     this.assertRiskDisclaimerAcknowledged()
     const tab = this.getAgentTab(browserSession, tabId)
-    if (tab.view.webContents.canGoBack()) tab.view.webContents.goBack()
+    if (tab.view.webContents.navigationHistory.canGoBack()) tab.view.webContents.navigationHistory.goBack()
     this.updateNavigationState(browserSession, tab)
     return structuredClone(this.buildState(browserSession))
   }
@@ -1295,7 +1365,7 @@ export class BrowserController {
     const browserSession = this.getOrCreateSession(sessionId)
     this.assertRiskDisclaimerAcknowledged()
     const tab = this.getAgentTab(browserSession, tabId)
-    if (tab.view.webContents.canGoForward()) tab.view.webContents.goForward()
+    if (tab.view.webContents.navigationHistory.canGoForward()) tab.view.webContents.navigationHistory.goForward()
     this.updateNavigationState(browserSession, tab)
     return structuredClone(this.buildState(browserSession))
   }
@@ -1333,7 +1403,7 @@ export class BrowserController {
       // 全量 AX tree 在富文本编辑器、长列表和复杂 SPA 中会非常大；限制深度以保留主页面交互层，
       // 同时避免 Chromium 为整棵树做序列化而长时间阻塞。
       const observeDepth = resolveBrowserObserveAxDepth(maxElements)
-      const response = await this.cdp(tab, 'Accessibility.getFullAXTree', { depth: observeDepth }, BROWSER_OBSERVE_TIMEOUT_MS, signal)
+      const response = await this.cdp(tab, 'Accessibility.getFullAXTree', { depth: observeDepth }, this.timing.observeTimeoutMs, signal)
       throwIfBrowserOperationAborted(signal)
       const nodes = Array.isArray(response.nodes) ? response.nodes : []
       const candidates: Array<{ backendNodeId: number; role: string; name: string; editable: boolean }> = []
@@ -1384,7 +1454,7 @@ export class BrowserController {
     return this.runTabOperation(browserSession, tab, signal ?? browserSession.agentAbortController.signal, async (operationSignal) => {
       // Filter the AX tree before applying the observation ranking/cap so Find can discover a matching
       // element that was absent from the compact BrowserObserve output.
-      const response = await this.cdp(tab, 'Accessibility.getFullAXTree', { depth: resolveBrowserObserveAxDepth(400) }, BROWSER_OBSERVE_TIMEOUT_MS, operationSignal)
+      const response = await this.cdp(tab, 'Accessibility.getFullAXTree', { depth: resolveBrowserObserveAxDepth(400) }, this.timing.observeTimeoutMs, operationSignal)
       throwIfBrowserOperationAborted(operationSignal)
       const nodes = Array.isArray(response.nodes) ? response.nodes : []
       const candidates: Array<{ backendNodeId: number; role: string; name: string; editable: boolean }> = []
@@ -1593,6 +1663,20 @@ export class BrowserController {
     }
   }
 
+  /**
+   * Runtime.evaluate 类操作的统一入口：失败（尤其是命令超时）必须留下一条 trace。
+   * 状态用 unknown 表示“命令结果未知”，绝不能因为调试通道已重连就被当成执行成功。
+   */
+  private async runScriptOperation(browserSession: BrowserSessionRecord, tab: BrowserTabRecord, action: BrowserTraceAction, label: string, expression: string, signal?: AbortSignal): Promise<unknown> {
+    try {
+      return await this.executePageExpression(tab, expression, signal)
+    } catch (error) {
+      const failure = describeBrowserScriptFailure(label, error)
+      this.trace(browserSession, tab, action, failure.summary, failure.status)
+      throw error
+    }
+  }
+
   private assertWaitCondition(condition: BrowserWaitCondition, timeoutMs: number): void {
     if (!condition.value.trim()) throw new Error('等待条件不能为空。')
     if (!Number.isFinite(timeoutMs) || timeoutMs < 250 || timeoutMs > 30_000) throw new Error('等待超时必须在 250 到 30000 毫秒之间。')
@@ -1653,7 +1737,7 @@ export class BrowserController {
     this.assertRiskDisclaimerAcknowledged()
     const tab = this.getAgentTab(browserSession, tabId)
     return this.runTabOperation(browserSession, tab, signal ?? browserSession.agentAbortController.signal, async (operationSignal) => {
-      const result = await this.executePageExpression(tab, buildBrowserDomActionExpression(input), operationSignal)
+      const result = await this.runScriptOperation(browserSession, tab, 'dom', '页面 DOM 操作', buildBrowserDomActionExpression(input), operationSignal)
       this.trace(browserSession, tab, 'dom', `DOM ${input.action}：${input.selector.slice(0, 100)}`, 'dispatched')
       return { tabId: tab.tabId, url: tab.state.url, result }
     })
@@ -1665,7 +1749,7 @@ export class BrowserController {
     this.assertRiskDisclaimerAcknowledged()
     const tab = this.getAgentTab(browserSession, tabId)
     return this.runTabOperation(browserSession, tab, signal ?? browserSession.agentAbortController.signal, async (operationSignal) => {
-      const result = await this.executePageExpression(tab, buildBrowserScrollExpression(input), operationSignal)
+      const result = await this.runScriptOperation(browserSession, tab, 'scroll', '页面滚动', buildBrowserScrollExpression(input), operationSignal)
       this.trace(browserSession, tab, 'scroll', input.selector ? `滚动容器 ${input.selector.slice(0, 100)}` : '滚动页面', 'dispatched')
       return { tabId: tab.tabId, url: tab.state.url, result }
     })
@@ -1677,7 +1761,7 @@ export class BrowserController {
     this.assertRiskDisclaimerAcknowledged()
     const tab = this.getAgentTab(browserSession, tabId)
     return this.runTabOperation(browserSession, tab, signal ?? browserSession.agentAbortController.signal, async (operationSignal) => {
-      const result = await this.executePageExpression(tab, buildBrowserExtractExpression(input), operationSignal)
+      const result = await this.runScriptOperation(browserSession, tab, 'extract', '页面内容抽取', buildBrowserExtractExpression(input), operationSignal)
       this.trace(browserSession, tab, 'extract', input.selector ? `抽取区域 ${input.selector.slice(0, 100)}` : '抽取页面正文', 'verified')
       return { tabId: tab.tabId, url: tab.state.url, result }
     })
@@ -1689,7 +1773,7 @@ export class BrowserController {
     this.assertRiskDisclaimerAcknowledged()
     const tab = this.getAgentTab(browserSession, tabId)
     return this.runTabOperation(browserSession, tab, signal ?? browserSession.agentAbortController.signal, async (operationSignal) => {
-      const result = await this.executePageExpression(tab, buildBrowserSelectOptionExpression(input), operationSignal)
+      const result = await this.runScriptOperation(browserSession, tab, 'select', '原生下拉选择', buildBrowserSelectOptionExpression(input), operationSignal)
       this.trace(browserSession, tab, 'select', `选择原生下拉选项 ${input.selector.slice(0, 100)}`, 'dispatched')
       return { tabId: tab.tabId, url: tab.state.url, result }
     })
@@ -1749,7 +1833,7 @@ export class BrowserController {
     this.assertRiskDisclaimerAcknowledged()
     const tab = this.getAgentTab(browserSession, tabId)
     return this.runTabOperation(browserSession, tab, signal ?? browserSession.agentAbortController.signal, async (operationSignal) => {
-      const result = await this.executePageExpression(tab, script, operationSignal)
+      const result = await this.runScriptOperation(browserSession, tab, 'script', '页面 JavaScript 执行', script, operationSignal)
       this.trace(browserSession, tab, 'script', `执行页面 JavaScript（${script.length} 字符）`, 'dispatched')
       return { tabId: tab.tabId, url: tab.state.url, result }
     })
@@ -1761,7 +1845,7 @@ export class BrowserController {
     const tab = this.getAgentTab(browserSession, tabId)
     return this.runTabOperation(browserSession, tab, signal ?? browserSession.agentAbortController.signal, async (operationSignal) => {
       throwIfBrowserOperationAborted(operationSignal)
-      const image = await withBrowserCdpTimeout(() => tab.view.webContents.capturePage(), 'Page.captureScreenshot', BROWSER_OBSERVE_TIMEOUT_MS + 3_000, operationSignal)
+      const image = await withBrowserCdpTimeout(() => tab.view.webContents.capturePage(), 'Page.captureScreenshot', this.timing.navigationTimeoutMs, operationSignal)
       throwIfBrowserOperationAborted(operationSignal)
       if (image.isEmpty()) {
         this.trace(browserSession, tab, 'screenshot', '截图为空，已拒绝返回无效图片', 'failed')

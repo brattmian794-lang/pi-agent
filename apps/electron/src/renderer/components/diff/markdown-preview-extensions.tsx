@@ -13,7 +13,7 @@ import { TableHeader } from '@tiptap/extension-table-header'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
 import DOMPurify from 'dompurify'
-import katex from 'katex'
+import { renderMarkdownMath } from '@/lib/markdown-math'
 import { highlightCode, highlightToTokens, getDisplayName } from '@proma/core'
 import { MermaidBlock } from '@proma/ui'
 import type { HighlightTokensResult } from '@proma/core'
@@ -628,7 +628,7 @@ function createMathView(initialNode: ProseMirrorNode, displayMode: boolean) {
     getHtml: (node) => {
       const latex = String(node.attrs.latex ?? '')
       try {
-        return katex.renderToString(latex, { displayMode, throwOnError: false })
+        return renderMarkdownMath(latex, displayMode)
       } catch {
         return latex
       }

@@ -54,3 +54,38 @@ export function estimateTokenCount(text: string): number {
 
   return Math.ceil(cjkCount * 1.5 + asciiCount * 0.25 + otherCount * 0.75)
 }
+
+/** Write 单次写入超限的判定结果：包含阈值、实际规模与可直接回给模型的分段写入说明。 */
+export interface WriteSizeLimitRejection {
+  estimatedTokens: number
+  chars: number
+  limit: number
+  message: string
+}
+
+/**
+ * 判断一次工具调用是否因 Write 内容过大而必须拒绝。
+ *
+ * 只约束 Write：其它工具的超大入参由各自权限与校验规则处理。
+ * 拒绝说明同时给出上限、实际规模、未写入磁盘的结论与分段写入方式，
+ * 让模型能自行构造有效的后续调用，而不是盲目重试同一次 Write。
+ */
+export function evaluateWriteSizeLimit(
+  toolName: string,
+  input: Record<string, unknown>,
+): WriteSizeLimitRejection | null {
+  if (toolName !== 'Write' || typeof input.content !== 'string') return null
+  const chars = input.content.length
+  const estimatedTokens = estimateTokenCount(input.content)
+  if (estimatedTokens <= WRITE_CONTENT_TOKEN_THRESHOLD) return null
+  return {
+    estimatedTokens,
+    chars,
+    limit: WRITE_CONTENT_TOKEN_THRESHOLD,
+    message:
+      `Write was rejected: content is too large for a single call (~${estimatedTokens} estimated tokens, ${chars} chars; ` +
+      `limit is ${WRITE_CONTENT_TOKEN_THRESHOLD} tokens per call). Nothing was written to disk. ` +
+      `Split the work: call Write once with the first section, then use Edit repeatedly to append the remaining sections ` +
+      `(old_string = a short unique tail of what already exists, new_string = that tail plus the next section).`,
+  }
+}

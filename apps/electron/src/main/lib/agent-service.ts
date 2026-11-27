@@ -717,7 +717,12 @@ export async function submitOrEnqueueAgentMessage(
       // Pi Utility 在 query 结束、renderer 尚未收到 STREAM_COMPLETE 的窗口会拒绝注入。
       // 该消息尚未被 SDK 接受，安全地降级到主进程队列，而非向用户暴露瞬态错误。
       if (!isStaleActiveQueueError(error)) throw error
-      console.warn(`[Agent 服务] 活跃通道已结束，转入 deferred queue: sessionId=${input.sessionId}`)
+      // 通道刚结束、renderer 还没收到 STREAM_COMPLETE 的瞬态窗口：消息尚未被 SDK 接受，
+      // 降级为延迟队列并由队列负责后续投递，这里记录可关联的 messageId 便于追踪结果。
+      console.warn(
+        `[Agent 服务] 注入时活跃通道已结束，消息转入 deferred queue 等待下次运行: sessionId=${input.sessionId}, messageId=${input.queueMessageId}`,
+        error,
+      )
     }
   }
 

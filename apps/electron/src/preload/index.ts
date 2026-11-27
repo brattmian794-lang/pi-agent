@@ -1084,6 +1084,8 @@ export interface ElectronAPI {
       releaseNotes?: string
       progress?: { percent: number; transferred: number; total: number; bytesPerSecond: number }
       error?: string
+      /** 失败是否可重试（超时/断网等）；renderer 据此提示「检查失败（可重试）」。 */
+      retryable?: boolean
       installScheduled?: boolean
     }>
     onStatusChanged: (callback: (status: {
@@ -1092,6 +1094,7 @@ export interface ElectronAPI {
       releaseNotes?: string
       progress?: { percent: number; transferred: number; total: number; bytesPerSecond: number }
       error?: string
+      retryable?: boolean
       installScheduled?: boolean
     }) => void) => () => void
     /** 在所有运行中的 Agent 结束后重启并安装更新 */

@@ -18,7 +18,7 @@
   "dist:linux": "bun run --filter='@proma/electron' dist:linux",
     "build": "bun run --filter='*' build",
     "typecheck": "bun run --filter='*' typecheck",
-    "test": "bun test"
+    "test": "bun test --isolate"
   },
   "devDependencies": {
     "@types/bun": "latest",

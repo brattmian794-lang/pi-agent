@@ -44,6 +44,51 @@ let checkInProgress = false
 let installInProgress = false
 let preparingInstall = false
 
+/** 本轮检查的标识，用于把 updater logger、error 回调与检查入口的日志关联到同一次事件。 */
+let activeCheckId: string | null = null
+let checkAttemptSeq = 0
+/** 同一次检查内重复上报的同一错误只记录一次，避免三层日志各刷一条。 */
+let lastFailureSignature: string | null = null
+
+/** 网络超时/断连属于可重试失败，与配置错误、签名错误等终态区分。 */
+function isRetryableUpdaterError(message: string): boolean {
+  return /ERR_TIMED_OUT|ERR_INTERNET_DISCONNECTED|ERR_CONNECTION|ETIMEDOUT|ENOTFOUND|timeout/i.test(message)
+}
+
+/** 上报来源：updater 内部 logger、error 事件回调、检查入口的 Promise rejection。 */
+type UpdaterFailureStage = 'logger' | 'check' | 'download'
+
+/**
+ * 把各层上报的同一错误归一成稳定签名。
+ *
+ * updater logger 收到的是 `Error: <message>` 加堆栈，而 error 事件与 Promise rejection
+ * 收到的是原始 message，只有去掉前缀和堆栈才能识别成同一次失败。
+ */
+function failureSignature(message: string): string {
+  const firstLine = message.split(/\r?\n/).find((line) => line.trim().length > 0) ?? ''
+  return firstLine.replace(/^(?:Error:\s*)+/i, '').trim()
+}
+
+/**
+ * 记录一次更新失败并返回统一的错误信息。
+ *
+ * electron-updater 会同时通过 logger、error 事件和 Promise rejection 报告同一次失败，
+ * 这里按「检查轮次 + 归一后的消息」去重：首条保留错误级并带上检查编号，其余降级为
+ * 一行说明，使诊断中同一事件只算一次失败、且能按检查编号关联。
+ */
+function reportUpdaterFailure(stage: UpdaterFailureStage, err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err)
+  const checkId = activeCheckId ?? '启动'
+  const signature = `${checkId}:${failureSignature(message)}`
+  if (lastFailureSignature === signature) {
+    console.log(`[更新][${checkId}] 同一失败已记录，跳过重复错误日志（来源=${stage}）`)
+  } else {
+    lastFailureSignature = signature
+    console.error(`[更新][${checkId}] 更新失败（来源=${stage}，可重试=${isRetryableUpdaterError(message)}）:`, err)
+  }
+  return message
+}
+
 /** 已安装更新包的延后清理：新版窗口稳定后才执行，避免安装链路中途删包。 */
 const APPLIED_UPDATE_CACHE_CLEANUP_DELAY_MS = 15_000
 /** Windows Defender、索引器等短暂占用缓存文件时的异步重试策略。 */
@@ -79,15 +124,15 @@ function setStatus(status: UpdateStatus): void {
 function handleDownloadFailure(err: unknown): void {
   if (!activeDownloadVersion) return
 
-  const failedVersion = activeDownloadVersion
   activeDownloadVersion = null
-  console.error(`[更新] 下载 v${failedVersion} 失败:`, err)
+  const message = reportUpdaterFailure('download', err)
 
   // electron-updater 可能在下载新版本时清理旧 pending 工件；不能只恢复 UI
   // 状态，否则会把不可安装的旧版本伪装成“更新已就绪”。下个检查周期会重试。
   setStatus({
     status: 'error',
-    error: err instanceof Error ? err.message : String(err),
+    error: message,
+    retryable: isRetryableUpdaterError(message),
   })
 }
 
@@ -118,6 +163,9 @@ export async function checkForUpdates(): Promise<void> {
   // 安装器与下载共用 pending 工件，不能在提交安装时替换文件。
   if (checkInProgress || activeDownloadVersion || preparingInstall || installInProgress) return
   checkInProgress = true
+  checkAttemptSeq += 1
+  activeCheckId = `检查#${checkAttemptSeq}`
+  console.log(`[更新][${activeCheckId}] 开始检查更新`)
 
   downloadedStatusDuringCheck = currentStatus.status === 'downloaded' ? currentStatus : null
 
@@ -128,15 +176,16 @@ export async function checkForUpdates(): Promise<void> {
     }
     await autoUpdater.checkForUpdates()
   } catch (err) {
-    console.error('[更新] 检查更新失败:', err)
+    const message = reportUpdaterFailure('check', err)
     if (downloadedStatusDuringCheck) {
-      console.warn('[更新] 保留已下载更新，稍后继续检查是否有新版')
+      console.warn(`[更新][${activeCheckId}] 保留已下载更新，稍后继续检查是否有新版`)
       downloadedStatusDuringCheck = null
       return
     }
     setStatus({
       status: 'error',
-      error: err instanceof Error ? err.message : String(err),
+      error: message,
+      retryable: isRetryableUpdaterError(message),
     })
   } finally {
     checkInProgress = false
@@ -277,18 +326,29 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
   }
 
   autoUpdater.logger = {
-    info: (...args: unknown[]) => console.log('[更新-updater]', ...args),
-    warn: (...args: unknown[]) => console.warn('[更新-updater]', ...args),
-    error: (...args: unknown[]) => console.error('[更新-updater]', ...args),
-    debug: (...args: unknown[]) => console.log('[更新-updater:debug]', ...args),
+    info: (...args: unknown[]) => console.log(`[更新-updater][${activeCheckId ?? '空闲'}]`, ...args),
+    warn: (...args: unknown[]) => console.warn(`[更新-updater][${activeCheckId ?? '空闲'}]`, ...args),
+    // electron-updater 内部的 error 监听会先写一条 logger.error，再发 error 事件；
+    // 与 error 回调共用同一去重器，避免一次失败留下两条错误级记录。
+    error: (...args: unknown[]) => {
+      reportUpdaterFailure('logger', args.map((arg) => (arg instanceof Error ? (arg.stack ?? arg.message) : String(arg))).join(' '))
+    },
+    debug: (...args: unknown[]) => console.log(`[更新-updater:debug][${activeCheckId ?? '空闲'}]`, ...args),
   }
 
   // 手动开始下载，确保重新检查时只在 Release 比已下载版本更新时替换安装包。
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
   if (process.platform === 'win32') {
+    // Windows 发布产物不含 .exe.blockmap（electron-builder nsis.differentialPackage: false），
+    // 显式关闭差分下载，避免先请求缺失的 blockmap 再回退全量下载。
+    // macOS 产物仍带 zip/dmg blockmap，保留差分更新以节省带宽。
+    autoUpdater.disableDifferentialDownload = true
+    const nsisUpdater = autoUpdater as NsisUpdater
     // 注册表可能保留另一处安装路径。覆盖当前运行的副本，避免重开仍是旧版。
-    (autoUpdater as NsisUpdater).installDirectory = dirname(app.getPath('exe'))
+    nsisUpdater.installDirectory = dirname(app.getPath('exe'))
+    // 发布策略固定使用完整 NSIS 安装包更新，显式关闭 web 安装器以固定行为。
+    nsisUpdater.disableWebInstaller = true
   }
 
   // 监听更新事件
@@ -365,15 +425,16 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
       return
     }
 
-    console.error('[更新] 更新出错:', err)
+    const message = reportUpdaterFailure('check', err)
     if (downloadedStatusDuringCheck) {
-      console.warn('[更新] 保留已下载更新，稍后继续检查是否有新版')
+      console.warn(`[更新][${activeCheckId ?? '启动'}] 保留已下载更新，稍后继续检查是否有新版`)
       downloadedStatusDuringCheck = null
       return
     }
     setStatus({
       status: 'error',
-      error: err.message,
+      error: message,
+      retryable: isRetryableUpdaterError(message),
     })
   })
 

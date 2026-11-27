@@ -7,7 +7,7 @@ import { DiagnosticLog } from './diagnostic-log'
 import { DiagnosticController, isDiagnosticSender } from './diagnostic-controller'
 import { getSettings, updateSettings } from './settings-service'
 import { getMainWindow } from './main-window-store'
-import { installDiagnosticConsole } from '../../lib/diagnostic-console'
+import { installDiagnosticConsole, refineTransportLog } from '../../lib/diagnostic-console'
 
 let controller: DiagnosticController | undefined
 
@@ -35,7 +35,10 @@ export function initializeDiagnostics(): void {
     },
     metadata: { version: app.getVersion(), platform: process.platform, arch: process.arch },
   })
-  installDiagnosticConsole(console, (level, values) => log.write('main', level, values))
+  installDiagnosticConsole(console, (level, values) => {
+    const refined = refineTransportLog(level, values)
+    log.write('main', refined.level, refined.values)
+  })
 }
 
 function getController(): DiagnosticController {

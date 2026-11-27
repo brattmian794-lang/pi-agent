@@ -430,19 +430,28 @@ function showAndFocusMainWindow(): void {
 }
 
 /**
- * Get the appropriate app icon path for the current platform
+ * Get the appropriate app icon path for the current platform.
+ *
+ * 开发态读 `dist/resources`；打包后 `dist/resources` 被 electron-builder 排除，
+ * 图标由 extraResources 放到 `process.resourcesPath`，两处都要查找。
  */
-function getIconPath(): string {
-  // resources 在 build:resources 阶段被复制到 dist/ 下，与 main.cjs 同级
+function getIconPath(): string | undefined {
   const resourcesDir = join(__dirname, 'resources')
-
-  if (process.platform === 'darwin') {
-    return join(resourcesDir, 'icon.icns')
-  } else if (process.platform === 'win32') {
-    return join(resourcesDir, 'icon.ico')
-  } else {
-    return join(resourcesDir, 'icon.png')
+  const packagedResourcesDir = process.resourcesPath
+  const iconFileNames = process.platform === 'darwin'
+    ? ['icon.icns', 'icon.png']
+    : process.platform === 'win32'
+      ? ['icon.ico', 'icon.png']
+      : ['icon.png']
+  const candidates = iconFileNames.flatMap((fileName) => [
+    join(resourcesDir, fileName),
+    join(packagedResourcesDir, fileName),
+  ])
+  const found = candidates.find((candidate) => existsSync(candidate))
+  if (!found) {
+    console.warn('[窗口] 未找到应用图标，回退系统默认图标。已查找:', candidates.join(', '))
   }
+  return found
 }
 
 function saveMainWindowState(): void {
@@ -464,11 +473,6 @@ function isDevServerNavigation(url: string): boolean {
 
 function createWindow(): void {
   const iconPath = getIconPath()
-  const iconExists = existsSync(iconPath)
-
-  if (!iconExists) {
-    console.warn('App icon not found at:', iconPath)
-  }
 
   const isMac = process.platform === 'darwin'
   const isWindows = process.platform === 'win32'
@@ -491,7 +495,7 @@ function createWindow(): void {
     ...initialBounds,
     minWidth: MIN_MAIN_WINDOW_WIDTH,
     minHeight: MIN_MAIN_WINDOW_HEIGHT,
-    icon: iconExists ? iconPath : undefined,
+    icon: iconPath,
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),

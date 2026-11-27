@@ -97,6 +97,8 @@ import {
 
 import { redactSensitiveLogText, redactSensitiveLogValue } from './bridge-log-redaction'
 import { getFeishuApiBaseUrl, normalizeFeishuDomain } from './feishu-domain'
+import { isTransientNetworkError } from './error-patterns'
+import { StartRetryController } from './start-retry'
 
 // ===== 类型定义 =====
 
@@ -153,6 +155,18 @@ class FeishuBridge {
 
   /** 连接状态 */
   private status: FeishuBridgeState = { status: 'disconnected', activeBindings: 0 }
+  /** 上次启动是否失败过：用于区分「首次连接」与「自愈后恢复」。 */
+  private hadStartFailure = false
+  /**
+   * 启动遇到可恢复网络错误后的内部退避重试。
+   *
+   * issue #19：解锁瞬间 ETIMEDOUT 时状态停在 connecting，而 bridge-registry 的
+   * 定时健康检查只在 needsRecovery() === true（即 error）时才会重启，所以必须由
+   * Bridge 自己退避重试；重试耗尽后再落 error 交回自愈守护。
+   */
+  private readonly startRetry = new StartRetryController()
+  /** 生命周期代号：stop() 递增，用于阻止已排期的重试在停止后复活连接。 */
+  private lifecycle = 0
 
   /** Bot 自身的 open_id（连接时获取，用于群聊 @Bot 精确检测） */
   private botOpenId: string | null = null
@@ -227,6 +241,10 @@ class FeishuBridge {
       throw new Error('请先配置 App ID 和 App Secret')
     }
 
+    // 记录本次启动代次：stop() 会递增 lifecycle，晚到的重试回调因此不会复活连接。
+    const generation = this.lifecycle
+    // 本次启动已经在进行，取消挂起的退避重试，避免自愈守护的强制恢复与本模块重试同时发起连接
+    this.startRetry.cancel()
     this.updateStatus({ status: 'connecting' })
 
     try {
@@ -305,15 +323,51 @@ class FeishuBridge {
       this.loadMetadata()
 
       this.updateStatus({ status: 'connected', connectedAt: Date.now() })
-      console.log('[飞书 Bridge] 已连接')
+      // 连接成功后清空退避计数，下次失败重新从最短间隔开始。
+      this.startRetry.reset()
+      if (this.hadStartFailure) {
+        // 只有真正走完 connect() 才宣告恢复，避免把可恢复失败后的下一次健康检查误报为已连接。
+        console.log('[飞书 Bridge] 连接已恢复（此前启动失败已被自愈重连覆盖）')
+        this.hadStartFailure = false
+      } else {
+        console.log('[飞书 Bridge] 已连接')
+      }
     } catch (error) {
-      const message = redactSensitiveLogText(error instanceof Error ? error.message : String(error))
-      this.updateStatus({ status: 'error', errorMessage: message })
-      console.error('[飞书 Bridge] 启动失败:', redactSensitiveLogValue(error))
+      const rawMessage = error instanceof Error ? error.message : String(error)
+      const message = redactSensitiveLogText(rawMessage)
+      // 系统解锁/唤醒瞬间网络尚未就绪（如 connect ETIMEDOUT）属于可自愈失败：
+      // 记为连接中并交给自愈守护重试，而不是让整个 Bridge 停在终态错误。
+      if (isTransientNetworkError(rawMessage)) {
+        this.hadStartFailure = true
+        this.updateStatus({ status: 'connecting' })
+        const plan = this.startRetry.schedule(() => {
+          if (this.lifecycle !== generation) return
+          void this.start()
+        })
+        if (plan) {
+          console.warn(
+            `[飞书 Bridge] 启动遇到可恢复网络错误，${Math.round(plan.delayMs / 1000)}s 后进行第 ${plan.attempt} 次重试:`,
+            redactSensitiveLogValue(error),
+          )
+        } else {
+          // 退避耗尽仍失败：落 error，让 bridge-registry 的 60s 健康检查继续接手恢复。
+          this.updateStatus({ status: 'error', errorMessage: message })
+          console.error('[飞书 Bridge] 启动重试耗尽，交由自愈守护继续重试:', redactSensitiveLogValue(error))
+        }
+      } else {
+        this.startRetry.reset()
+        this.hadStartFailure = true
+        this.updateStatus({ status: 'error', errorMessage: message })
+        console.error('[飞书 Bridge] 启动失败:', redactSensitiveLogValue(error))
+      }
     }
   }
 
   stop(): void {
+    // 先作废生命周期并取消挂起的退避重试，避免停止后又自行连回来
+    this.lifecycle += 1
+    this.startRetry.reset()
+
     // 取消 EventBus 监听
     this.eventBusUnsubscribe?.()
     this.eventBusUnsubscribe = null

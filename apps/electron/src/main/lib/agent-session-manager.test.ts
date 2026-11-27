@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import * as os from 'node:os'
 import { join } from 'node:path'
 
@@ -157,6 +157,65 @@ describe('Agent 会话 JSONL 读取', () => {
 
     expect(() => manager.truncateSDKMessages('session-truncate-bad-line', 'assistant-1'))
       .toThrow('JSONL 第 2 行解析失败')
+  })
+})
+
+describe('Agent 会话消息重写上限', () => {
+  const maxLength = 256 * 1024
+  const hugeText = '超'.repeat(300_000)
+
+  function readJsonlLines(sessionId: string): string[] {
+    const filePath = join(tempHome, '.proma', 'agent-sessions', `${sessionId}.jsonl`)
+    return readFileSync(filePath, 'utf-8').split('\n').filter((line) => line.trim())
+  }
+
+  test('Given 会话存在历史超大消息 When 截断到该消息 Then 重写后每行不超过存储上限且保留标识', () => {
+    writeAgentSessionJsonl('session-rewrite-huge', [
+      JSON.stringify({ type: 'user', uuid: 'uuid-small', message: { content: [{ type: 'text', text: '你好' }] }, parent_tool_use_id: null }),
+      JSON.stringify({ type: 'assistant', uuid: 'uuid-huge', message: { content: [{ type: 'text', text: hugeText }] }, parent_tool_use_id: null }),
+      JSON.stringify({ type: 'user', uuid: 'uuid-dropped', message: { content: [{ type: 'text', text: '被截断' }] }, parent_tool_use_id: null }),
+    ])
+
+    const kept = manager.truncateSDKMessages('session-rewrite-huge', 'uuid-huge')
+
+    expect(kept).toHaveLength(2)
+    const lines = readJsonlLines('session-rewrite-huge')
+    expect(lines).toHaveLength(2)
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(maxLength)
+    const restored = JSON.parse(lines[1]!) as { type: string; uuid: string }
+    expect(restored).toMatchObject({ type: 'assistant', uuid: 'uuid-huge' })
+  })
+
+  test('Given 会话存在历史超大消息 When 删除错误消息 Then 其余行同样按上限重写', () => {
+    writeAgentSessionJsonl('session-rewrite-error', [
+      JSON.stringify({ type: 'assistant', uuid: 'uuid-error', error: { message: 'boom' }, message: { content: [] }, parent_tool_use_id: null }),
+      JSON.stringify({ type: 'assistant', uuid: 'uuid-huge-2', message: { content: [{ type: 'text', text: hugeText }] }, parent_tool_use_id: null }),
+    ])
+
+    expect(manager.removeSDKErrorMessage('session-rewrite-error', 'uuid-error')).toBe(true)
+
+    const lines = readJsonlLines('session-rewrite-error')
+    expect(lines).toHaveLength(1)
+    expect(lines[0]!.length).toBeLessThanOrEqual(maxLength)
+    expect(JSON.parse(lines[0]!)).toMatchObject({ uuid: 'uuid-huge-2' })
+  })
+
+  test('Given 会话存在历史超大消息 When 写入 Skill 激活 Then 重写后仍满足上限并保留激活信息', () => {
+    writeAgentSessionJsonl('session-rewrite-skill', [
+      JSON.stringify({ type: 'user', uuid: 'uuid-user-skill', message: { content: [{ type: 'text', text: '用技能' }] }, parent_tool_use_id: null }),
+      JSON.stringify({ type: 'assistant', uuid: 'uuid-huge-3', message: { content: [{ type: 'text', text: hugeText }] }, parent_tool_use_id: null }),
+    ])
+
+    expect(manager.updateSDKUserMessageSkillActivations('session-rewrite-skill', 'uuid-user-skill', [
+      { slug: 'demo', name: 'Demo', sources: ['explicit'] },
+    ])).toBe(true)
+
+    const lines = readJsonlLines('session-rewrite-skill')
+    expect(lines).toHaveLength(2)
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(maxLength)
+    const userMessage = JSON.parse(lines[0]!) as { uuid: string; skill_activations?: Array<{ slug: string }> }
+    expect(userMessage.uuid).toBe('uuid-user-skill')
+    expect(userMessage.skill_activations).toEqual([expect.objectContaining({ slug: 'demo' })])
   })
 })
 

@@ -1,6 +1,6 @@
-# Proma 工程约定
+# pi-agent 工程约定
 
-Proma 是一个本地优先的 Electron AI 桌面 Agent。仓库是 Bun monorepo；主应用在 `apps/electron`，共享包在 `packages/*`。
+pi-agent 是一个本地优先的 Electron AI 桌面 Agent。仓库是 Bun monorepo；主应用在 `apps/electron`，共享包在 `packages/*`。
 
 ## 必须遵守
 
@@ -61,9 +61,9 @@ release-notes/                    版本发布日志
 
 ### Agent 与项目指令
 
-- Proma 仅使用 **Pi Agent runtime**。不要重新引入 Claude Agent SDK 或其专属配置、session 语义和打包依赖。
+- pi-agent 仅使用 **Pi Agent runtime**。不要重新引入 Claude Agent SDK 或其专属配置、session 语义和打包依赖。
 - 用户项目的 `AGENTS.md` 由 `project-instruction-resolver.ts` 在已授权项目根内显式解析；禁止恢复 cwd、祖先目录或附加目录的环境式规则发现。
-- Proma 受管工作区的 `AGENTS.md` 与用户项目的 `AGENTS.md` 有不同所有权边界，均须通过已验证的显式路径注入。
+- pi-agent 受管工作区的 `AGENTS.md` 与用户项目的 `AGENTS.md` 有不同所有权边界，均须通过已验证的显式路径注入。
 - 旧项目 `CLAUDE.md` 仅是兼容输入，不能自动覆盖、合并或删除用户文件。
 - 改动 Agent 工具、权限或上下文路径时，检查工作区隔离、附加目录边界、会话恢复与 Automation/Collaboration 的回归。
 
@@ -77,3 +77,11 @@ release-notes/                    版本发布日志
 - `apps/electron/package.json` 是桌面应用版本；`packages/*/package.json` 是各共享包版本；默认 Skill 改动还必须递增其 `SKILL.md` frontmatter 的 `version`。
 - 仅在功能行为、安装方式或用户流程发生变化时更新 README / tutorial / release notes；改文档前先取得用户授权。
 - 提交前检查 `git diff`，不要覆盖用户已有改动或提交无关文件。
+
+<!-- proma:memory:start -->
+## 记忆维护
+
+- 项目记忆索引：[MEMORY.md](<C:\Users\666\.proma\agent-workspaces\pi-agent\memory\MEMORY.md>)；详细主题按索引按需读取，新增、移动、归档主题时同步索引。
+- 全局用户画像：[user_profile.md](<C:\Users\666\.proma\memory\user_profile.md>)，跨项目共享；本项目补充偏好存入 C:\Users\666\.proma\agent-workspaces\pi-agent\memory\project-preferences.md 并加入项目索引，仅在本项目覆盖全局偏好。
+- 在任务中及时修订已确认的偏好、经验和决策，保留来源、适用范围和核验日期；不把临时任务进度写成永久偏好。超过一周的阶段性要求结合本轮证据复查；到期或被替代的内容移出有效入口并可恢复地归档。读取不等于核验，不编造用户事实。
+<!-- proma:memory:end -->

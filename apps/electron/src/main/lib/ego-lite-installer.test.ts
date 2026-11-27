@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from 'bun:test'
+import { describe, expect, it, mock, spyOn } from 'bun:test'
 import { createEgoLiteInstaller } from './ego-lite-installer'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -25,6 +25,44 @@ describe('自动安装的安全边界', () => {
 })
 
 describe('Windows 官方安装流程', () => {
+  for (const fails of [false, true]) {
+    it(`记录客户端启动${fails ? '失败' : '成功'}，不写入可执行路径或原始异常`, async () => {
+      const home = await mkdtemp(join(process.env.PI_SCRATCH_DIR ?? tmpdir(), 'ego-launch-'))
+      const info = spyOn(console, 'info').mockImplementation(() => {})
+      const warn = spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        const appDir = join(home, 'Citro Labs', 'ego', 'Application')
+        await mkdir(appDir, { recursive: true })
+        const exe = join(appDir, 'ego.exe')
+        await writeFile(exe, '')
+        await writeFile(join(appDir, 'ego-browser.exe'), '')
+        const error = new Error('private launch diagnostic')
+        const launch = mock(async () => { if (fails) throw error })
+        const installer = createEgoLiteInstaller({
+          platform: 'win32', arch: 'x64', home, temp: home,
+          env: { LOCALAPPDATA: home, SystemRoot: 'C:\\Windows' },
+          fetch: mock(async () => { throw new Error('不得发起下载') }) as unknown as typeof fetch,
+          run: async file => file.endsWith('powershell.exe') ? 'CN=CITRO LABS PTE. LIMITED, O=CITRO LABS PTE. LIMITED' : '',
+          launch,
+        })
+        const pending = installer.ensure(new AbortController().signal, () => {})
+        if (fails) await expect(pending).rejects.toBe(error)
+        else await expect(pending).resolves.toBeUndefined()
+        expect(launch).toHaveBeenCalledWith(exe, [])
+        expect(info).toHaveBeenCalledWith('[Ego Lite] client_open_started', { platform: 'win32', source: 'setup' })
+        if (fails) expect(warn).toHaveBeenCalledWith('[Ego Lite] client_open_failed', {
+          platform: 'win32', source: 'setup', durationMs: expect.any(Number), reason: 'launch_error',
+        })
+        else expect(info).toHaveBeenCalledWith('[Ego Lite] client_open_succeeded', {
+          platform: 'win32', source: 'setup', durationMs: expect.any(Number),
+        })
+      } finally {
+        info.mockRestore()
+        warn.mockRestore()
+        await rm(home, { recursive: true, force: true })
+      }
+    })
+  }
   it('进程 PATH 未更新时仍能定位官方活动目录中的原生 CLI', async () => {
     const home = await mkdtemp(join(tmpdir(), 'proma-ego-discovery-test-'))
     try {

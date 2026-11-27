@@ -22,6 +22,7 @@ import Markdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
+import { KATEX_REHYPE_OPTIONS, remarkCjkMathHint } from '@/lib/markdown-math'
 import { CalendarDays, ChevronDown, ChevronUp, Paperclip, FileText, ListTodo, Sparkles, Server, Download, MessageSquareText, Quote } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { shouldInspectMermaidCodeBlock, shouldRenderMermaidCodeBlock } from '@/lib/mermaid-detection'
@@ -530,8 +531,15 @@ interface MessageResponseProps {
 }
 
 /** 稳定引用的插件数组，避免 react-markdown 每帧重建插件管线 */
-const REMARK_PLUGINS = [remarkGfm, remarkMath]
-const REHYPE_PLUGINS = [rehypeKatex]
+const REMARK_PLUGINS: NonNullable<React.ComponentProps<typeof Markdown>['remarkPlugins']> = [
+  remarkGfm,
+  remarkMath,
+  // 中文公式在 strict='ignore' 下不再产生 KaTeX 逐字符告警，这里补回一次性可定位提示。
+  remarkCjkMathHint,
+]
+const REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof Markdown>['rehypePlugins']> = [
+  [rehypeKatex, KATEX_REHYPE_OPTIONS],
+]
 
 /** 允许 mention:// 和本地绝对路径通过 URL 清洗 */
 function mentionUrlTransform(url: string): string {

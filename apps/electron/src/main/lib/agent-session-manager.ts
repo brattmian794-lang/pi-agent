@@ -530,21 +530,58 @@ export function appendSDKMessages(id: string, messages: SDKMessage[]): void {
   }
 }
 
+type JsonObject = Record<string, unknown>
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** 逐层把超长字符串替换为预览，用于多段中等内容叠加后仍超限的情况。 */
+function shrinkLongStrings(node: unknown, keepChars: number, note: string): void {
+  if (Array.isArray(node)) {
+    for (const item of node) shrinkLongStrings(item, keepChars, note)
+    return
+  }
+  if (!isJsonObject(node)) return
+  for (const [key, value] of Object.entries(node)) {
+    if (typeof value === 'string') {
+      if (value.length > keepChars) node[key] = value.slice(0, keepChars) + note
+    } else {
+      shrinkLongStrings(value, keepChars, note)
+    }
+  }
+}
+
+/** 极端情况下只保留可识别消息的最小元数据，确保写入行一定不超上限。 */
+function buildMinimalMessageStub(msg: SDKMessage, originalLength: number, note: string): SDKMessage {
+  const candidate: JsonObject = isJsonObject(msg) ? msg : {}
+  const stub: JsonObject = {
+    _truncated: true,
+    _originalLength: originalLength,
+    _note: note,
+  }
+  for (const key of ['type', 'subtype', 'uuid', 'session_id', 'parent_tool_use_id']) {
+    const value = candidate[key]
+    if (typeof value === 'string' && value.length <= 200) stub[key] = value
+  }
+  return stub as unknown as SDKMessage
+}
+
 /**
  * 截断超大 SDKMessage 的内容，保留元数据结构。
- * 处理三类膨胀源：超长 text block、超大 tool_result、内嵌 base64 图片。
+ * 处理三类膨胀源：超长 text block、超大 tool_result、内嵌 base64 图片；
+ * 多段中等长度内容叠加超限时继续逐层缩短字符串，最终保证不超过存储上限。
  */
-function sanitizeOversizedMessage(msg: SDKMessage, originalLength: number): SDKMessage {
+export function sanitizeOversizedMessage(msg: SDKMessage, originalLength: number): SDKMessage {
   const truncationNote = `\n[内容已截断: 原始 ${(originalLength / 1024).toFixed(0)}K chars 超出存储限制]`
   const truncationThreshold = MAX_SDK_MESSAGE_LENGTH / 2
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const clone: any = JSON.parse(JSON.stringify(msg))
-  const content = clone.message?.content
+  const clone = JSON.parse(JSON.stringify(msg)) as JsonObject
+  const message = clone.message
+  const content = isJsonObject(message) ? message.content : undefined
   if (Array.isArray(content)) {
-    for (let i = 0; i < content.length; i++) {
-      const block = content[i]
-      if (!block || typeof block !== 'object') continue
+    for (const block of content) {
+      if (!isJsonObject(block)) continue
 
       // 截断超长 text block
       if (block.type === 'text' && typeof block.text === 'string' && block.text.length > truncationThreshold) {
@@ -558,9 +595,9 @@ function sanitizeOversizedMessage(msg: SDKMessage, originalLength: number): SDKM
         }
         // 剥离 base64 图片数据
         if (Array.isArray(block.content)) {
-          block.content = block.content.map((item: Record<string, unknown>) => {
-            if (item?.type === 'image' && (item.source as Record<string, unknown>)?.data) {
-              const dataLen = String((item.source as Record<string, unknown>).data).length
+          block.content = block.content.map((item: unknown) => {
+            if (isJsonObject(item) && item.type === 'image' && isJsonObject(item.source) && item.source.data) {
+              const dataLen = String(item.source.data).length
               return { type: 'image', _truncated: true, _originalLength: dataLen }
             }
             return item
@@ -571,11 +608,21 @@ function sanitizeOversizedMessage(msg: SDKMessage, originalLength: number): SDKM
   }
 
   // 截断 error.message
-  if (clone.error && typeof clone.error === 'object' && typeof clone.error.message === 'string' && clone.error.message.length > truncationThreshold) {
-    clone.error.message = clone.error.message.slice(0, TRUNCATED_PREVIEW_LENGTH) + truncationNote
+  const errorField = clone.error
+  if (isJsonObject(errorField) && typeof errorField.message === 'string' && errorField.message.length > truncationThreshold) {
+    errorField.message = errorField.message.slice(0, TRUNCATED_PREVIEW_LENGTH) + truncationNote
   }
 
-  return clone as SDKMessage
+  // 多段中等内容叠加时单块都不会触发上面的规则，需要按总长度继续收缩。
+  for (const keepChars of [TRUNCATED_PREVIEW_LENGTH, 500, 200]) {
+    if (JSON.stringify(clone).length <= MAX_SDK_MESSAGE_LENGTH) break
+    shrinkLongStrings(clone, keepChars, truncationNote)
+  }
+  if (JSON.stringify(clone).length > MAX_SDK_MESSAGE_LENGTH) {
+    return buildMinimalMessageStub(msg, originalLength, truncationNote.trim())
+  }
+
+  return clone as unknown as SDKMessage
 }
 
 /**
@@ -1063,6 +1110,9 @@ function getStoredMessageUuid(msg: SDKMessage): string | undefined {
   return 'uuid' in msg ? (msg as { uuid?: string }).uuid : undefined
 }
 
+/** 同一载荷的截断结果只记录一次，避免流式重复序列化把日志刷满。 */
+const reportedOversizedMessages = new Set<string>()
+
 function serializeSDKMessageForStorage(
   msg: SDKMessage,
   sourceDir?: string,
@@ -1078,8 +1128,18 @@ function serializeSDKMessageForStorage(
   if (sourceDir && destDir) {
     sanitized = rewriteSourceToDest(sanitized, sourceDir, destDir)
   }
-  if (sanitized.length > MAX_SDK_MESSAGE_LENGTH) {
-    console.warn(`[Agent 会话] 消息截断后仍超限 (${(sanitized.length / 1024).toFixed(0)}K chars)`)
+
+  // sanitizeOversizedMessage 保证结果不超过上限；这里记录最终写入结果，
+  // 并按「消息 + 原始长度」去重，避免同一载荷反复告警。
+  const reportKey = `${getStoredMessageUuid(msg) ?? 'no-uuid'}:${serialized.length}`
+  if (!reportedOversizedMessages.has(reportKey)) {
+    if (reportedOversizedMessages.size >= 200) reportedOversizedMessages.clear()
+    reportedOversizedMessages.add(reportKey)
+    const fits = sanitized.length <= MAX_SDK_MESSAGE_LENGTH
+    console.warn(
+      `[Agent 会话] 超大消息已截断: 原始 ${(serialized.length / 1024).toFixed(0)}K chars → 写入 ${(sanitized.length / 1024).toFixed(0)}K chars`
+      + `（${fits ? '满足存储上限' : '仍超限，已降级为占位消息'}，uuid=${getStoredMessageUuid(msg) ?? 'unknown'}）`,
+    )
   }
   return sanitized
 }
@@ -1150,7 +1210,8 @@ export function truncateSDKMessages(id: string, upToUuidInclusive: string): SDKM
   }
   const kept = messages.slice(0, cutIndex + 1)
 
-  const content = kept.map((m) => JSON.stringify(m)).join('\n') + (kept.length > 0 ? '\n' : '')
+  // 重写也必须走统一序列化，避免历史遗留的超大消息在截断/回退后继续超过存储上限。
+  const content = kept.map((m) => serializeSDKMessageForStorage(m)).join('\n') + (kept.length > 0 ? '\n' : '')
   writeTextFileAtomic(filePath, content)
 
   console.log(`[Agent 会话] 消息已截断: sessionId=${id}, 保留 ${kept.length}/${messages.length} 条`)
@@ -1177,7 +1238,7 @@ export function removeSDKErrorMessage(id: string, errorUuid: string): boolean {
   if (targetIndex < 0) return false
 
   const kept = messages.filter((_, index) => index !== targetIndex)
-  const content = kept.map((message) => JSON.stringify(message)).join('\n') + (kept.length > 0 ? '\n' : '')
+  const content = kept.map((message) => serializeSDKMessageForStorage(message)).join('\n') + (kept.length > 0 ? '\n' : '')
   writeTextFileAtomic(filePath, content)
   console.log(`[Agent 会话] 已删除重试前错误: sessionId=${id}, uuid=${errorUuid}`)
   return true
@@ -1212,7 +1273,7 @@ export function updateSDKUserMessageSkillActivations(
   if (JSON.stringify(merged) === JSON.stringify(target.skill_activations ?? [])) return true
 
   messages[targetIndex] = { ...target, skill_activations: merged }
-  const content = messages.map((message) => JSON.stringify(message)).join('\n') + '\n'
+  const content = messages.map((message) => serializeSDKMessageForStorage(message)).join('\n') + '\n'
   writeTextFileAtomic(filePath, content)
   return true
 }

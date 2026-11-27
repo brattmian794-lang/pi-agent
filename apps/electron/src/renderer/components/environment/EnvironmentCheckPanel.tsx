@@ -8,6 +8,7 @@
 import * as React from 'react'
 import { useAtom, useSetAtom } from 'jotai'
 import { Loader2, RefreshCw } from 'lucide-react'
+import type { RuntimeStatus } from '@proma/shared'
 import { Button } from '@/components/ui/button'
 import { EnvironmentCheckCard } from './EnvironmentCheckCard'
 import {
@@ -17,6 +18,50 @@ import {
   isNodeJsOkAtom,
 } from '@/atoms/environment'
 import { useAtomValue } from 'jotai'
+
+/** Bun 安装来源的中文名，用于状态文案 */
+const BUN_SOURCE_LABELS: Record<'system' | 'bundled' | 'vendor', string> = {
+  system: '系统 PATH',
+  bundled: '打包内置',
+  vendor: 'vendor 目录（开发环境）',
+}
+
+/** Bun 卡片的展示信息 */
+export interface BunCardSummary {
+  status: 'checking' | 'success' | 'warning'
+  statusText: string
+  /** 不可用时的诊断原文：区分「候选存在但无法执行」与「未安装」 */
+  errorMessage?: string
+}
+
+/**
+ * 生成 Bun 运行时卡片的展示信息
+ *
+ * Bun 是可选组件，只有「找到候选但都无法执行」才算异常，需要把主进程给出的
+ * 诊断原文（RuntimeStatus.bun.error）展示出来；完全未安装时按可选缺省处理，
+ * 不展示警告细节，避免打扰用户。
+ */
+export function describeBunStatus(runtime: RuntimeStatus | null): BunCardSummary {
+  if (!runtime) {
+    return { status: 'checking', statusText: '正在检测...' }
+  }
+
+  const bun = runtime.bun
+  if (bun.available) {
+    const versionText = bun.version ? `Bun ${bun.version} 已可用` : 'Bun 已可用'
+    const sourceLabel = bun.source ? BUN_SOURCE_LABELS[bun.source] : null
+    return {
+      status: 'success',
+      statusText: sourceLabel ? `${versionText}（来源：${sourceLabel}）` : versionText,
+    }
+  }
+
+  const error = bun.error?.trim()
+  if (error) {
+    return { status: 'warning', statusText: 'Bun 不可用', errorMessage: error }
+  }
+  return { status: 'warning', statusText: '未安装 Bun（可选，不影响核心功能）' }
+}
 
 interface EnvironmentCheckPanelProps {
   /** 首次挂载时是否自动跑一次检测 */
@@ -102,6 +147,9 @@ export function EnvironmentCheckPanel({
     nodeStatusText = '未安装（可选）'
   }
 
+  // ----- Bun 卡片（可选组件，但需要暴露诊断信息） -----
+  const bunSummary = describeBunStatus(runtime)
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -150,6 +198,14 @@ export function EnvironmentCheckPanel({
               ? { type: 'download', installerId: 'nodejs' }
               : { type: 'none' }
           }
+        />
+        <EnvironmentCheckCard
+          name="Bun 运行时"
+          status={bunSummary.status}
+          requirement="可选 · 执行依赖 Bun 的自定义脚本时才需要"
+          statusText={bunSummary.statusText}
+          errorMessage={bunSummary.errorMessage}
+          action={{ type: 'none' }}
         />
       </div>
 

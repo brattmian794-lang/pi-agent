@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process'
+import { logEgoLite } from './ego-lite-logging'
 import { createHash } from 'node:crypto'
 import { constants, createReadStream, createWriteStream } from 'node:fs'
 import { access, link, lstat, mkdir, mkdtemp, readdir, realpath, rm, rmdir, stat, writeFile } from 'node:fs/promises'
@@ -349,6 +350,19 @@ export function createEgoLiteInstaller(options: InstallerOptions) {
     await options.launch(installer, [])
   }
 
+  async function openClient(launch: () => Promise<unknown>) {
+    const started = performance.now()
+    const context = { platform: options.platform, source: 'setup' }
+    logEgoLite('info', 'client_open_started', context)
+    try {
+      await launch()
+      logEgoLite('info', 'client_open_succeeded', { ...context, durationMs: Math.round(performance.now() - started) })
+    } catch (error) {
+      logEgoLite('warn', 'client_open_failed', { ...context, durationMs: Math.round(performance.now() - started), reason: 'launch_error' })
+      throw error
+    }
+  }
+
   async function ensure(signal: AbortSignal, report: Report) {
     check(signal)
     report('detecting', '正在检测已安装的 Ego Lite 和原生 CLI…')
@@ -373,15 +387,16 @@ export function createEgoLiteInstaller(options: InstallerOptions) {
       app ??= await discoverApp()
       cli ??= await discoverCli(app)
       if (app && !launched) {
+        const executable = app
         report('starting', onboarding)
         if (mac) {
           if (!await macCli(app)) throw new Error('检测到已有的 Ego Lite 应用，但其 CLI 缺失；不会覆盖，请通过官网修复。')
           check(signal)
-          try { await run('/usr/bin/open', [app]) } catch { throw new Error('无法启动 Ego Lite；请检查系统隐私与安全提示，并手动打开应用后重试。') }
+          try { await openClient(() => run('/usr/bin/open', [executable])) } catch { throw new Error('无法启动 Ego Lite；请检查系统隐私与安全提示，并手动打开应用后重试。') }
         } else {
           try { await authenticode(app) } catch { throw new Error('检测到的 ego.exe 未通过发布者校验；请通过官网修复。') }
           check(signal)
-          await options.launch(app, [])
+          await openClient(() => options.launch(executable, []))
         }
         launched = true
       }

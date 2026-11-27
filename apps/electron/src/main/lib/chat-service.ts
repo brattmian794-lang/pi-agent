@@ -19,7 +19,7 @@ import type { ChatSendInput, ChatMessage, GenerateTitleInput, FileAttachment, Ch
 import {
   getAdapter,
   streamSSE,
-  fetchTitle,
+  fetchTitleWithDiagnostics,
 } from '@proma/core'
 import type { ImageAttachmentData, ContinuationMessage } from '@proma/core'
 import { listChannels, resolveChannelRuntimeApiKey } from './channel-manager'
@@ -629,10 +629,14 @@ export async function generateTitle(input: GenerateTitleInput): Promise<string |
 
     const proxyUrl = await getEffectiveProxyUrl()
     const fetchFn = getFetchFn(proxyUrl)
-    const title = await fetchTitle(request, adapter, fetchFn)
-    const result = title ? sanitizeGeneratedTitle(title) : null
+    const titleResult = await fetchTitleWithDiagnostics(request, adapter, fetchFn)
+    const result = titleResult.title ? sanitizeGeneratedTitle(titleResult.title) : null
     if (!result) {
-      console.warn('[标题生成] API 未返回可用标题')
+      // 保留失败分类：额度耗尽与网络/模型故障对用户是两种完全不同的处置。
+      const failure = titleResult.failure
+      console.warn(failure
+        ? `[标题生成] 语义标题不可用：${failure.kind}（${failure.message}）；已回退到本地标题`
+        : '[标题生成] API 未返回可用标题；已回退到本地标题')
       // 自定义渠道的服务端偶发返回空标题时，仍要完成重命名，避免对话长期停在默认标题。
       return (channel.provider === 'custom') ? createFallbackTitle(userMessage) : null
     }

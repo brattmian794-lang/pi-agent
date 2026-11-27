@@ -16,6 +16,13 @@ function runtimeFixture(service: BackgroundCommandService, sessionId = 'session-
   let resolveExit!: (value: { exitCode: number }) => void
   let processStops = 0
   const connection: Connection = {
+    currentState: {
+      status: 'ready',
+      bootId: 'test',
+      pid: null,
+      active: true,
+      pendingRequests: 0,
+    },
     setRequestHandler: (callback) => { handler = callback },
     onEvent: (callback) => { listener = callback; return () => { listener = undefined } },
     stop: async () => { stops++ },

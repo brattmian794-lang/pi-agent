@@ -60,3 +60,32 @@ export function serializeDiagnosticValues(values: unknown[]): string[] {
   }
   return result
 }
+
+const TRANSPORT_CHANNEL_PATTERN = /\[ws\]|websocket/i
+const TRANSPORT_TIMEOUT_PATTERN = /(?:timeout of|timed out after)\s+(\d+)\s*ms/i
+
+/** 去掉日志里的凭据片段：URL 中的 key/token 参数与 Authorization 头。 */
+export function scrubCredentialFragments(text: string): string {
+  return text
+    .replace(/([?&](?:api_?key|key|token|access_token|signature|sig|secret|password)=)[^&\s"']+/gi, '$1[已隐藏]')
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [已隐藏]')
+}
+
+/**
+ * 底层库（如 Pi SDK 的 WS 通道）用 console.log 写出传输层超时，
+ * 这里提升为可筛选的告警级，并补齐不含凭据的连接上下文与重连状态说明。
+ */
+export function refineTransportLog(
+  level: DiagnosticLogLevel,
+  values: unknown[],
+): { level: DiagnosticLogLevel; values: unknown[] } {
+  if (level === 'warn' || level === 'error') return { level, values }
+  const text = serializeDiagnosticValues(values).join(' ')
+  if (!TRANSPORT_CHANNEL_PATTERN.test(text) || !TRANSPORT_TIMEOUT_PATTERN.test(text)) return { level, values }
+  const timeoutMs = TRANSPORT_TIMEOUT_PATTERN.exec(text)?.[1] ?? '未知'
+  const note = `[传输层] WebSocket 请求超时（${timeoutMs}ms）：本次连接结果未知，是否已重连需由后续运行时事件确认`
+  return {
+    level: 'warn',
+    values: [note, ...values.map((value) => (typeof value === 'string' ? scrubCredentialFragments(value) : value))],
+  }
+}

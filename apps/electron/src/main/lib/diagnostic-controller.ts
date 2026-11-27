@@ -1,5 +1,6 @@
 import type { DiagnosticExportResult, DiagnosticRecordInput, DiagnosticState } from '@proma/shared'
 import type { DiagnosticLog } from './diagnostic-log'
+import { refineTransportLog } from '../../lib/diagnostic-console'
 
 interface DiagnosticDependencies {
   log: DiagnosticLog
@@ -32,7 +33,9 @@ export class DiagnosticController {
 
   record(input: unknown): void {
     if (!this.dependencies.log.isEnabled() || !isDiagnosticRecord(input)) return
-    this.dependencies.log.write('renderer', input.level, input.values)
+    // 渲染进程发来的 ws 超时同样是「结果未知」的告警，与主进程共用同一套级别修正。
+    const refined = refineTransportLog(input.level, input.values)
+    this.dependencies.log.write('renderer', refined.level, refined.values)
   }
 
   async exportLogs(): Promise<DiagnosticExportResult> {

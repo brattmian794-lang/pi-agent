@@ -15,7 +15,7 @@ import {
   SettingsRow,
   SettingsSelect,
 } from './primitives'
-import { updateStatusAtom, updaterAvailableAtom, checkForUpdates } from '@/atoms/updater'
+import { updateStatusAtom, updaterAvailableAtom, checkForUpdates, type UpdateStatus } from '@/atoms/updater'
 import { environmentCheckResultAtom } from '@/atoms/environment'
 import { EnvironmentCheckCard } from '@/components/environment/EnvironmentCheckCard'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -92,7 +92,7 @@ function UpdateCard(): React.ReactElement | null {
       <SettingsRow label="软件更新">
         <div className="flex items-center gap-3">
           {/* 状态文字 */}
-          <StatusText status={status.status} version={status.version} error={status.error} />
+          <StatusText update={status} />
 
           {/* 操作按钮 */}
           {status.status === 'downloaded' ? (
@@ -167,34 +167,41 @@ function UpdateCard(): React.ReactElement | null {
   )
 }
 
-/** 状态文字组件 */
-function StatusText({ status, version, error }: {
-  status: string
-  version?: string
-  error?: string
-}): React.ReactElement {
-  switch (status) {
+/**
+ * 生成更新失败时的状态文案
+ *
+ * 主进程会按错误类型判定 retryable（如网络超时属于可重试的临时故障），
+ * 这里只负责把它转换成用户可读文案：可重试时明确提示用户再检查一次，
+ * 其余失败保持原有「检查失败」文案，避免误导。
+ */
+export function formatUpdateErrorLabel(status: UpdateStatus): string {
+  return status.retryable === true ? '检查失败（可重试）' : '检查失败'
+}
+
+/** 状态文字组件（导出以便测试断言错误分支的文案与 title） */
+export function StatusText({ update }: { update: UpdateStatus }): React.ReactElement {
+  switch (update.status) {
     case 'checking':
       return <span className="text-xs text-muted-foreground">正在检查...</span>
     case 'available':
       return (
         <span className="text-xs text-primary flex items-center gap-1">
           <ExternalLink className="h-3 w-3" />
-          新版本 v{version} 可用
+          新版本 v{update.version} 可用
         </span>
       )
     case 'downloading':
       return (
         <span className="text-xs text-muted-foreground flex items-center gap-1">
           <Loader2 className="h-3 w-3 animate-spin" />
-          正在下载 v{version}
+          正在下载 v{update.version}
         </span>
       )
     case 'downloaded':
       return (
         <span className="text-xs text-primary flex items-center gap-1">
           <CheckCircle2 className="h-3 w-3" />
-          更新 v{version} 已就绪
+          更新 v{update.version} 已就绪
         </span>
       )
     case 'not-available':
@@ -206,9 +213,9 @@ function StatusText({ status, version, error }: {
       )
     case 'error':
       return (
-        <span className="text-xs text-destructive flex items-center gap-1" title={error}>
+        <span className="text-xs text-destructive flex items-center gap-1" title={update.error}>
           <AlertCircle className="h-3 w-3" />
-          检查失败
+          {formatUpdateErrorLabel(update)}
         </span>
       )
     default:

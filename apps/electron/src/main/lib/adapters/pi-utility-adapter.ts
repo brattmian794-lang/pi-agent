@@ -6,7 +6,7 @@ import type { AgentRuntimeClient } from '../agent-runtime-client'
 import type { BackgroundCommandService } from '../background-command-service'
 import type { PiAgentQueryOptions } from './pi-agent-adapter'
 
-type RuntimeConnection = Pick<AgentRuntimeClient, 'call' | 'stop' | 'setRequestHandler' | 'onEvent'>
+type RuntimeConnection = Pick<AgentRuntimeClient, 'call' | 'stop' | 'setRequestHandler' | 'onEvent' | 'currentState'>
 interface PendingQuery {
   queryId: string
   sessionId: string
@@ -19,6 +19,17 @@ interface PendingQuery {
 }
 interface CapabilityRequest { controller: AbortController; queryId: string }
 interface QueryAbortResponse { accepted: boolean; completed?: boolean }
+/** 取消请求的可核验结局：确认取消、状态未知、运行时已停止、明确失败。 */
+type AbortOutcome = 'cancelled' | 'unknown' | 'stopped' | 'failed'
+const RUNTIME_STOPPED_ERROR_PATTERN =
+  /Agent runtime (?:stopped|was stopped|is not connected|port is not connected|startup cancelled|exited|fatal error)/i
+
+function classifyAbortOutcome(error: unknown): AbortOutcome {
+  const message = error instanceof Error ? error.message : String(error)
+  if (RUNTIME_STOPPED_ERROR_PATTERN.test(message)) return 'stopped'
+  if (/timed out|timeout/i.test(message)) return 'unknown'
+  return 'failed'
+}
 interface AsyncEventQueue<T> {
   push(value: T): void
   end(): void
@@ -30,6 +41,7 @@ interface AsyncEventQueue<T> {
 export class PiUtilityAdapter {
   private readonly pendingQueries = new Map<string, PendingQuery>()
   private readonly capabilityAbortControllers = new Map<string, CapabilityRequest>()
+  private readonly reportedAbortOutcomes = new Set<string>()
 
   constructor(
     private readonly backgroundCommands?: BackgroundCommandService,
@@ -65,9 +77,13 @@ export class PiUtilityAdapter {
       unsubscribe()
       this.pendingQueries.delete(queryId)
       this.abortCapabilitiesForQuery(queryId)
-      if (pending.accepted && !pending.runtimeFailed) {
+      if (pending.accepted && !pending.runtimeFailed && client.currentState.status === 'ready') {
         await client.call(AGENT_RUNTIME_METHODS.QUERY_ABORT,
-          { queryId, sessionId: input.sessionId }, { queryId, timeoutMs: 5_000 }).catch(() => {})
+          { queryId, sessionId: input.sessionId }, { queryId, timeoutMs: 5_000 }).catch((error: unknown) => {
+          // 收尾阶段的取消失败只影响运行时回收，不应升级成用户可见错误。
+          console.log(`[PiUtilityAdapter] 收尾取消未确认（运行时可能已结束）: sessionId=${input.sessionId}, queryId=${queryId}`,
+            error instanceof Error ? error.message : error)
+        })
       }
       await client.stop()
     }
@@ -78,19 +94,60 @@ export class PiUtilityAdapter {
     for (const pending of this.pendingQueries.values()) {
       if (pending.sessionId !== sessionId) continue
       this.abortCapabilitiesForQuery(pending.queryId)
+      // 运行时已经停止/崩溃时，取消请求没有意义，也不能再自动拉起新运行时去发它。
+      if (pending.client.currentState.status !== 'ready') {
+        this.reportAbortOutcome(pending, 'stopped')
+        await this.failStoppedQuery(pending, new Error('Agent 运行时已停止，本次取消无需执行'))
+        continue
+      }
       aborts.push(pending.client.call<QueryAbortResponse>(AGENT_RUNTIME_METHODS.QUERY_ABORT,
         { queryId: pending.queryId, sessionId }, { queryId: pending.queryId, timeoutMs: 5_000 }).then(async (result) => {
         if (result.completed === false) {
-          await this.failStoppedQuery(pending, new Error('停止 Agent 超时，已关闭卡住的运行时'))
+          // 运行时明确回执「未能在时限内完成取消」：本地只能关闭运行时来恢复确定性状态。
+          this.reportAbortOutcome(pending, 'unknown')
+          await this.failStoppedQuery(pending, new Error('停止 Agent 结果未知（运行时未在时限内确认取消），已关闭运行时'))
           return
         }
+        this.reportAbortOutcome(pending, 'cancelled')
         await pending.client.stop()
       }).catch(async (error) => {
-        console.warn(`[PiUtilityAdapter] abort failed: sessionId=${sessionId}`, error)
+        const outcome = classifyAbortOutcome(error)
+        this.reportAbortOutcome(pending, outcome, error)
+        // 超时/无法确认时统一表述为「结果未知」，避免把未确认的取消当成已取消或普通失败。
+        if (outcome === 'stopped') {
+          await this.failStoppedQuery(pending, new Error('Agent 运行时已停止，本次取消无需执行'))
+          return
+        }
+        if (outcome === 'unknown') {
+          await this.failStoppedQuery(pending, new Error('停止 Agent 结果未知（未在时限内收到运行时确认取消），已关闭运行时'))
+          return
+        }
         await this.failStoppedQuery(pending, error)
       }))
     }
     await Promise.all(aborts)
+  }
+
+  /** 同一 queryId 的同类结局只记录一次，避免重复取消刷屏。 */
+  private reportAbortOutcome(pending: PendingQuery, outcome: AbortOutcome, error?: unknown): void {
+    const key = `${pending.sessionId}:${pending.queryId}:${outcome}`
+    if (this.reportedAbortOutcomes.has(key)) return
+    if (this.reportedAbortOutcomes.size >= 200) this.reportedAbortOutcomes.clear()
+    this.reportedAbortOutcomes.add(key)
+    const context = `sessionId=${pending.sessionId}, queryId=${pending.queryId}`
+    if (outcome === 'cancelled') {
+      console.log(`[PiUtilityAdapter] 已确认取消运行: ${context}`)
+      return
+    }
+    if (outcome === 'stopped') {
+      console.log(`[PiUtilityAdapter] 运行时已停止，取消请求按终态处理: ${context}`)
+      return
+    }
+    if (outcome === 'unknown') {
+      console.warn(`[PiUtilityAdapter] 取消结果未知（未在 5s 内收到运行时确认），已关闭运行时以恢复确定性状态: ${context}`)
+      return
+    }
+    console.warn(`[PiUtilityAdapter] 取消失败: ${context}`, error)
   }
 
   private async failStoppedQuery(pending: PendingQuery, error: unknown): Promise<void> {

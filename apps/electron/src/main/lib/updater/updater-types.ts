@@ -12,7 +12,7 @@ export type UpdateStatus =
   | { status: 'downloading'; version: string; progress: DownloadProgress }
   | { status: 'downloaded'; version: string; installScheduled?: boolean }
   | { status: 'not-available' }
-  | { status: 'error'; error: string }
+  | { status: 'error'; error: string; retryable?: boolean }
 
 /** 下载进度 */
 export interface DownloadProgress {

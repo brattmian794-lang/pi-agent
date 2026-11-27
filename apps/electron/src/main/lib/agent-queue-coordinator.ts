@@ -145,9 +145,29 @@ export class AgentQueueCoordinator {
     void Promise.resolve()
       .then(() => this.options.startRun({ ...entry.input, startedAt, runGeneration, userMessageUuid: messageId }, webContents))
       .then(
-        () => this.finishDispatch(sessionId, messageId),
-        () => this.finishDispatch(sessionId, messageId),
+        () => {
+          console.log(`[Agent 队列] 延迟消息已投递: sessionId=${sessionId}, messageId=${messageId}`)
+          this.finishDispatch(sessionId, messageId)
+        },
+        (error: unknown) => {
+          // startRun 失败时消息不能被静默丢弃：放回队列头部，等下一次生命周期事件重新调度。
+          // 这里不立即重试，避免在持续失败时形成紧凑重试循环。
+          console.warn(
+            `[Agent 队列] 延迟消息投递失败，已放回队列等待重新调度: sessionId=${sessionId}, messageId=${messageId}`,
+            error,
+          )
+          this.requeueEntry(sessionId, entry)
+          if (this.dispatching.get(sessionId) === messageId) this.dispatching.delete(sessionId)
+        },
       )
+  }
+
+  /** 放回队列头部且不产生重复条目；用于投递失败后的重试。 */
+  private requeueEntry(sessionId: string, entry: QueueEntry): void {
+    const queue = this.queues.get(sessionId) ?? []
+    if (queue.some((item) => item.input.queueMessageId === entry.input.queueMessageId)) return
+    queue.unshift(entry)
+    this.queues.set(sessionId, queue)
   }
 
   private finishDispatch(sessionId: string, messageId: string): void {

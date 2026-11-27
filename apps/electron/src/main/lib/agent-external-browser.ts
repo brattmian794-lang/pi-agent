@@ -1,6 +1,7 @@
 import { isEgoLitePlatformSupported } from './ego-lite-settings-policy'
 import { egoLiteAuthorizationSignal } from './ego-lite-revocation'
 import type { createEgoLiteRun, EgoAction } from './ego-lite-runtime'
+import { logEgoLite } from './ego-lite-logging'
 import { isEgoSetupActive, type EgoSetupState } from '@proma/shared'
 
 export type ExternalBrowserAction = EgoAction
@@ -38,8 +39,12 @@ export function lazyExternalBrowserRun(load: () => Promise<() => ExternalBrowser
   let loading: Promise<() => ExternalBrowserRun> | undefined
   let runtime: ExternalBrowserRun | undefined
   function check(signal?: AbortSignal): void {
-    signal?.throwIfAborted()
-    if (stopped || !enabled()) throw new Error(`本轮外部浏览器不可用。${manualFallback}`)
+    if (signal?.aborted || stopped || !enabled()) {
+      const reason = signal?.aborted ? 'cancelled' : stopped ? 'stopped' : 'disabled'
+      logEgoLite('warn', 'dispatch_rejected', { reason })
+      signal?.throwIfAborted()
+      throw new Error(`本轮外部浏览器不可用。${manualFallback}`)
+    }
   }
   const authorization = egoLiteAuthorizationSignal()
   function stop(): void {
@@ -52,12 +57,19 @@ export function lazyExternalBrowserRun(load: () => Promise<() => ExternalBrowser
   return {
     async execute(action, signal) {
       check(signal)
+      let phase: 'load' | 'check' | 'create' | 'execute' = 'load'
       try {
         const create = await (loading ??= load())
+        phase = 'check'
         check(signal)
+        phase = 'create'
         runtime ??= create()
+        phase = 'execute'
         return await runtime.execute(action, signal)
       } catch (error) {
+        if (phase === 'load' || phase === 'create') {
+          logEgoLite('error', 'dispatch_rejected', { action: action.kind, reason: phase === 'load' ? 'runtime_load_error' : 'runtime_create_error' })
+        }
         throw new Error(`外部浏览器操作未确认完成，请勿重放。${manualFallback} ${error instanceof Error ? error.message : ''}`, { cause: error })
       }
     },

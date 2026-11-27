@@ -46,7 +46,7 @@ import { isSessionNotFoundError } from './error-patterns'
 import { AgentEventBus } from './agent-event-bus'
 import { isStaleActiveQueueError } from './agent-queue-routing'
 import { decryptApiKey, getChannelById, listChannels, persistCodexOAuthCredentials, persistGithubCopilotOAuthCredentials, persistXaiOAuthCredentials, resolveChannelRuntimeApiKey, resolveCodexOAuthCredentials, resolveGithubCopilotOAuthCredentials, resolveXaiOAuthCredentials } from './channel-manager'
-import { getAdapter, fetchTitle } from '@proma/core'
+import { getAdapter, fetchTitleWithDiagnostics } from '@proma/core'
 import pkg from '../../../package.json' with { type: 'json' }
 import { getFetchFn } from './proxy-fetch'
 import { getEffectiveProxyUrl } from './proxy-settings-service'
@@ -69,7 +69,7 @@ import { askUserService } from './agent-ask-user-service'
 import { exitPlanService, type ExitPlanPermissionResult } from './agent-exit-plan-service'
 import { validateToolInput } from './agent-tool-input-validator'
 import { isSessionPlanMarkdownPath } from './agent-plan-file-policy'
-import { estimateTokenCount, WRITE_CONTENT_TOKEN_THRESHOLD } from './agent-tool-token-estimator'
+import { evaluateWriteSizeLimit } from './agent-tool-token-estimator'
 import { buildPiBuiltinTools } from './adapters/pi-builtin-tools'
 import { getAgentVaultRoots, getVaultUserContext } from './vault-service'
 import { buildPiMcpTools } from './adapters/pi-mcp-tools'
@@ -382,10 +382,13 @@ export class AgentOrchestrator {
 
       const proxyUrl = await getEffectiveProxyUrl()
       const fetchFn = getFetchFn(proxyUrl)
-      const title = await fetchTitle(request, providerAdapter, fetchFn)
-      const result = title ? sanitizeGeneratedTitle(title) : null
+      const titleResult = await fetchTitleWithDiagnostics(request, providerAdapter, fetchFn)
+      const result = titleResult.title ? sanitizeGeneratedTitle(titleResult.title) : null
       if (!result) {
-        console.warn('[Agent 标题生成] API 未返回可用标题，使用本地兜底')
+        const reason = titleResult.failure
+          ? `${titleResult.failure.kind}（${titleResult.failure.message}）`
+          : '供应商返回空标题'
+        console.warn(`[Agent 标题生成] 语义标题不可用：${reason}；已回退到本地标题`)
         return createFallbackTitle(userMessage)
       }
       console.log(`[Agent 标题生成] 生成标题成功: "${result}"`)
@@ -1294,24 +1297,19 @@ export class AgentOrchestrator {
         // ── 参数校验守卫（所有模式、所有工具，优先于权限检查） ──
         const validationFailure = validateToolInput(toolName, input)
         if (validationFailure) {
-          console.warn(`[Agent 工具验证] 参数缺失: tool=${toolName}, mode=${currentMode}`)
+          console.warn(
+            `[Agent 工具验证] 参数缺失: tool=${toolName}, mode=${currentMode}, missing=${validationFailure.missingParams.join(',')}`,
+          )
           return validationFailure
         }
 
         // ── Write 大文件 token 截断防护 ──
-        if (toolName === 'Write' && typeof input.content === 'string') {
-          const estimatedTokens = estimateTokenCount(input.content)
-          if (estimatedTokens > WRITE_CONTENT_TOKEN_THRESHOLD) {
-            console.warn(
-              `[Agent 工具验证] Write 内容过大: tokens≈${estimatedTokens}, chars=${input.content.length}, file=${String(input.file_path)}`,
-            )
-            return {
-              behavior: 'deny' as const,
-              message:
-                `The content for Write tool (~${estimatedTokens} estimated tokens, ${input.content.length} chars) is too large and may be truncated. ` +
-                `Please split the write into smaller sequential steps: write the first portion of the file now, then use Edit tool to append remaining sections incrementally.`,
-            }
-          }
+        const writeSizeRejection = evaluateWriteSizeLimit(toolName, input)
+        if (writeSizeRejection) {
+          console.warn(
+            `[Agent 工具验证] Write 内容超过单次写入上限，已拒绝执行: tokens≈${writeSizeRejection.estimatedTokens} > ${writeSizeRejection.limit}, chars=${writeSizeRejection.chars}, file=${String(input.file_path)}`,
+          )
+          return { behavior: 'deny' as const, message: writeSizeRejection.message }
         }
 
         // ── EnterPlanMode / ExitPlanMode 处理 ──

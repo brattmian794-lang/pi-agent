@@ -1,9 +1,10 @@
 import cp from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { discoverEgoLiteCli } from './ego-lite-installer'
+import { logEgoLite } from './ego-lite-logging'
 
 export type EgoAction =
   | { kind: 'navigate'; url: string }
@@ -14,6 +15,9 @@ export type EgoAction =
 
 const cliError = 'Ego Lite 操作失败，结果可能未知，请检查浏览器。'
 const stopped = 'Ego Lite 已停止派发。'
+class EgoRuntimeError extends Error {
+  constructor(readonly reason: string, message = cliError) { super(message) }
+}
 const marker = 'PROMA_EGO_RESULT:'
 const maxBytes = 1024 * 1024
 const leases = new Set<string>()
@@ -33,43 +37,43 @@ function childEnv(): NodeJS.ProcessEnv {
 }
 
 async function invoke(source: string, signal?: AbortSignal): Promise<unknown> {
-  if (signal?.aborted) throw new Error(stopped)
+  if (signal?.aborted) throw new EgoRuntimeError('cancelled', stopped)
   const bin = await discoverEgoLiteCli()
-  if (signal?.aborted) throw new Error(stopped)
-  if (!bin) throw new Error('找不到可安全调用的 ego-browser 入口。请在设置中重新检查 Ego Lite。')
+  if (signal?.aborted) throw new EgoRuntimeError('cancelled', stopped)
+  if (!bin) throw new EgoRuntimeError('cli_not_found', '找不到可安全调用的 ego-browser 入口。请在设置中重新检查 Ego Lite。')
   return new Promise((resolve, reject) => {
     const child = cp.spawn(bin, ['nodejs'], { shell: false, windowsHide: true, env: childEnv(), stdio: 'pipe' })
     const chunks: Buffer[] = []
     let size = 0
-    let failure: string | undefined
+    let failure: EgoRuntimeError | undefined
     // kill 只请求终止；只有 close 才允许 execute 结束并释放租约。
-    function terminate(reason: string) {
+    function terminate(error: EgoRuntimeError) {
       if (failure) return
-      failure = reason
+      failure = error
       child.kill('SIGKILL')
     }
-    const abort = () => terminate('Ego Lite 已停止派发。已送达的写操作结果未知，请检查浏览器。')
-    const timer = setTimeout(() => terminate('Ego Lite 超时，结果未知。'), 20_000)
+    const abort = () => terminate(new EgoRuntimeError('cancelled', 'Ego Lite 已停止派发。已送达的写操作结果未知，请检查浏览器。'))
+    const timer = setTimeout(() => terminate(new EgoRuntimeError('timeout', 'Ego Lite 超时，结果未知。')), 20_000)
     signal?.addEventListener('abort', abort, { once: true })
     for (const stream of [child.stdout, child.stderr]) {
       stream.on('data', (chunk: Buffer) => {
         if (failure) return
         size += chunk.length
-        if (size > maxBytes) terminate('Ego Lite 输出超限，结果未知。')
+        if (size > maxBytes) terminate(new EgoRuntimeError('output_limit', 'Ego Lite 输出超限，结果未知。'))
         else chunks.push(chunk) // Ego CLI 的结构化结果可能经 stderr 输出；仍要求唯一 marker。
       })
     }
-    child.on('error', () => terminate(cliError))
-    child.stdin.on('error', () => terminate(cliError))
+    child.on('error', () => terminate(new EgoRuntimeError('cli_process_error')))
+    child.stdin.on('error', () => terminate(new EgoRuntimeError('cli_input_error')))
     child.once('close', code => {
       clearTimeout(timer)
       signal?.removeEventListener('abort', abort)
-      if (failure || code !== 0) return reject(new Error(failure ?? cliError))
+      if (failure || code !== 0) return reject(failure ?? new EgoRuntimeError('cli_exit'))
       const lines = Buffer.concat(chunks).toString().split(/\r?\n/).filter(line => line.startsWith(marker))
       try {
         if (lines.length !== 1) throw new Error()
         resolve(JSON.parse(lines[0]!.slice(marker.length)))
-      } catch { reject(new Error(cliError)) }
+      } catch { reject(new EgoRuntimeError('invalid_cli_reply')) }
     })
     child.stdin.end(source)
   })
@@ -100,16 +104,16 @@ ${body}
 function checkProfileError(reply: unknown, name: string, mode: 'current' | 'workspace'): void {
   if (!reply || typeof reply !== 'object' || !('profileError' in reply)) return
   if (reply.profileError === 'missing') {
-    throw new Error(mode === 'current'
+    throw new EgoRuntimeError('profile_missing', mode === 'current'
       ? '未找到可复用的 Ego 当前浏览器配置。请先完成客户端首次引导后重试。'
       : `Ego Lite 缺少工作区专属 Profile。请新建名为 ${name} 的非默认 Profile，或改选“复用当前 Ego 浏览器配置”。`)
   }
   if (reply.profileError === 'conflict') {
-    throw new Error(mode === 'current'
+    throw new EgoRuntimeError('profile_conflict', mode === 'current'
       ? 'Ego 当前浏览器配置不唯一或不可用，请检查客户端默认 Profile 后重试。'
       : `Ego Lite 工作区 Profile 冲突：${name} 必须唯一且不能是默认 Profile。`)
   }
-  throw new Error(cliError)
+  throw new EgoRuntimeError('invalid_cli_reply')
 }
 
 export async function ensureEgoLiteProfile(workspaceId: string, signal: AbortSignal, mode: 'current' | 'workspace' = 'workspace'): Promise<void> {
@@ -136,7 +140,7 @@ export async function probeEgoLite(signal?: AbortSignal): Promise<string> {
 }
 
 function literal(value: string, limit = 65536) {
-  if (typeof value !== 'string' || value.length > limit) throw new Error('无效的 Ego Lite 参数。')
+  if (typeof value !== 'string' || value.length > limit) throw new EgoRuntimeError('invalid_action', '无效的 Ego Lite 参数。')
   return JSON.stringify(value)
 }
 
@@ -156,7 +160,7 @@ function operation(action: EgoAction, image: string): string {
     case 'handoff': return 'await task.handOff();'
     case 'screenshot': return `await page.screenshot({path:${literal(image)}});`
   }
-  throw new Error('不支持的 Ego Lite 操作或参数。')
+  throw new EgoRuntimeError('invalid_action', '不支持的 Ego Lite 操作或参数。')
 }
 
 export function createEgoLiteRun(workspaceId: string, sessionId: string, isEnabled: () => boolean, profileMode: 'current' | 'workspace' = 'workspace') {
@@ -168,23 +172,37 @@ export function createEgoLiteRun(workspaceId: string, sessionId: string, isEnabl
   let profileId: string | null = null
   let leased = false
   let busy = false
-  function stop() {
+  const context = { runId: randomUUID(), sessionRef: hash(sessionId), workspaceRef: hash(workspaceId), profileMode }
+  const logContext = () => ({ ...context, ...(spaceId === null ? {} : { spaceId }) })
+  let attempted = false
+  let stopReason: 'requested' | 'cancelled' | 'failure' | 'handoff' | 'concurrent_action' | undefined
+  let stopLogged = false
+  function stop(reason: NonNullable<typeof stopReason> = 'requested') {
+    stopReason ??= reason
     controller.abort()
     if (leased && !busy) { leases.delete(profileName); leased = false }
   }
-  async function execute(action: EgoAction, signal?: AbortSignal): Promise<string> {
-    if (busy) { stop(); throw new Error(stopped) }
+  function logStop() {
+    if (!attempted || busy || !stopReason || stopLogged) return
+    stopLogged = true
+    logEgoLite('info', 'dispatch_stopped', { ...logContext(), reason: stopReason })
+  }
+  async function dispatch(action: EgoAction, onOpenAttempt: () => void, signal?: AbortSignal): Promise<string> {
+    if (busy) { stop('concurrent_action'); throw new EgoRuntimeError('concurrent_action', stopped) }
     busy = true
     let temp: string | undefined
-    signal?.addEventListener('abort', stop, { once: true })
+    const onAbort = () => stop('cancelled')
+    signal?.addEventListener('abort', onAbort, { once: true })
     try {
-      if (signal?.aborted || controller.signal.aborted || !isEnabled()) throw new Error(stopped)
-      if (!leased && leases.has(profileName)) throw new Error('工作区 Profile 已被占用。')
+      if (signal?.aborted || controller.signal.aborted) throw new EgoRuntimeError('cancelled', stopped)
+      if (!isEnabled()) throw new EgoRuntimeError('disabled', stopped)
+      if (!leased && leases.has(profileName)) throw new EgoRuntimeError('profile_busy', '工作区 Profile 已被占用。')
       leased = true
       leases.add(profileName)
       if (action.kind === 'screenshot') temp = mkdtempSync(join(tmpdir(), 'proma-ego-'))
       const image = temp ? join(temp, 'page.png') : ''
       const op = operation(action, image)
+      if (spaceId === null) onOpenAttempt()
       const reply = await invoke(withProfile(profileName, `
 const previousProfile = ${JSON.stringify(profileId)};
 if (previousProfile !== null && p.id !== previousProfile) throw Error('profile');
@@ -199,36 +217,64 @@ const ownedId = async () => {
   return entry.id;
 };
 const existing = await ownedId();
+if (previous !== null && existing === null) {
+  ${emit("{spaceMissing:true}")}
+  return;
+}
 if (previous !== null && previous !== existing) throw Error('space');
 const task = existing === null ? await taskSpace(name, {profileId:p.id}) : await taskSpace(existing);
 if (!Number.isSafeInteger(task.spaceId) || (existing !== null && task.spaceId !== existing) || await ownedId() !== task.spaceId) throw Error('space');
 const page = task.page('p1');
 let result = 'ok';
 ${op}
-${emit('{spaceId:task.spaceId,profileId:p.id,result}')}\n`, profileMode), controller.signal)
+${emit('{spaceId:task.spaceId,profileId:p.id,created:existing===null,result}')}\n`, profileMode), controller.signal)
       checkProfileError(reply, profileName, profileMode)
-      if (!reply || typeof reply !== 'object' || !('spaceId' in reply) || typeof reply.spaceId !== 'number' || !Number.isSafeInteger(reply.spaceId) || !('profileId' in reply) || typeof reply.profileId !== 'string' || !('result' in reply) || typeof reply.result !== 'string') throw new Error(cliError)
+      if (reply && typeof reply === 'object' && 'spaceMissing' in reply && reply.spaceMissing === true) throw new EgoRuntimeError('task_space_missing')
+      if (!reply || typeof reply !== 'object' || !('spaceId' in reply) || typeof reply.spaceId !== 'number' || !Number.isSafeInteger(reply.spaceId) || !('profileId' in reply) || typeof reply.profileId !== 'string' || !('created' in reply) || typeof reply.created !== 'boolean' || !('result' in reply) || typeof reply.result !== 'string') throw new EgoRuntimeError('invalid_cli_reply')
+      const firstOpen = spaceId === null
       spaceId = reply.spaceId
       profileId = reply.profileId
-      if (action.kind === 'handoff') stop()
+      if (firstOpen) logEgoLite('info', 'task_space_opened', { ...logContext(), action: action.kind, mode: reply.created ? 'created' : 'reused' })
+      if (action.kind === 'handoff') stop('handoff')
       if (temp) {
-        if (statSync(image).size > 8 * maxBytes) throw new Error(cliError)
+        if (statSync(image).size > 8 * maxBytes) throw new EgoRuntimeError('invalid_screenshot')
         const bytes = readFileSync(image)
-        if (bytes.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error(cliError)
+        if (bytes.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new EgoRuntimeError('invalid_screenshot')
         return bytes.toString('base64')
       }
       return reply.result
     } catch (err) {
-      stop()
-      // 文件路径、CLI 输出、页面数据和填充值均不进入诊断。
-      if (err instanceof Error && /^(?:Ego Lite|找不到可安全调用的 ego-browser|工作区 Profile|不支持的 Ego Lite|无效的 Ego Lite)/.test(err.message)) throw err
-      throw new Error(cliError)
+      const reason = err instanceof EgoRuntimeError ? err.reason : 'unexpected_error'
+      stop(reason === 'cancelled' ? 'cancelled' : 'failure')
+      if (err instanceof EgoRuntimeError) throw err
+      throw new EgoRuntimeError(reason)
     } finally {
       busy = false
-      signal?.removeEventListener('abort', stop)
+      signal?.removeEventListener('abort', onAbort)
       if (controller.signal.aborted) stop()
       if (temp) rmSync(temp, { recursive: true, force: true })
     }
   }
-  return { execute, stop }
+  return {
+    async execute(action: EgoAction, signal?: AbortSignal) {
+      attempted = true
+      const started = performance.now()
+      const details = () => ({ ...logContext(), action: action.kind, durationMs: Math.round(performance.now() - started) })
+      let opening = false
+      try {
+        const result = await dispatch(action, () => {
+          opening = true
+          logEgoLite('info', 'task_space_open_started', details())
+        }, signal)
+        logEgoLite('info', 'action_succeeded', details())
+        return result
+      } catch (error) {
+        const reason = error instanceof EgoRuntimeError ? error.reason : 'unexpected_error'
+        if (opening && spaceId === null) logEgoLite('warn', 'task_space_open_unconfirmed', { ...details(), reason })
+        logEgoLite(reason === 'unexpected_error' ? 'error' : 'warn', 'action_failed', { ...details(), reason })
+        throw error
+      } finally { logStop() }
+    },
+    stop() { stop(); logStop() },
+  }
 }

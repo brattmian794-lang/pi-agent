@@ -87,6 +87,12 @@ extraResources:
   # 默认 Dock 图标（macOS app.dock.setIcon 使用）
   - from: resources/icon.png
     to: icon.png
+  # Windows/macOS 运行时窗口图标：dist/resources 已被 files 排除，
+  # 必须随 extraResources 发布，否则运行时找不到 icon.ico/icon.icns。
+  - from: resources/icon.ico
+    to: icon.ico
+  - from: resources/icon.icns
+    to: icon.icns
   # Renderer bundle 载入前显示的静态启动页，避免运行时检测期间出现空白窗口。
   - from: resources/startup-splash
     to: startup-splash

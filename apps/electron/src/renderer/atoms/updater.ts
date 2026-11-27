@@ -22,6 +22,13 @@ export interface UpdateStatus {
   releaseNotes?: string
   progress?: DownloadProgress
   error?: string
+  /**
+   * 该错误是否属于可重试的临时性故障（如网络超时）。
+   *
+   * 由主进程按错误类型判定后随状态一并推送；renderer 只负责展示，
+   * 不在此处推导重试策略。
+   */
+  retryable?: boolean
   /** 用户已安排在所有 Agent 空闲后重启安装，暂停重复提醒。 */
   installScheduled?: boolean
 }

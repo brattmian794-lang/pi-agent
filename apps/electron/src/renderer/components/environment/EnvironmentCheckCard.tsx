@@ -44,6 +44,8 @@ interface EnvironmentCheckCardProps {
   requirement: string
   /** 状态描述（覆盖默认文案） */
   statusText?: string
+  /** 诊断原文（如「候选存在但无法执行」的具体原因），展示在要求说明下方 */
+  errorMessage?: string
   /** 操作类型 */
   action: CardAction
 }
@@ -54,6 +56,7 @@ export function EnvironmentCheckCard({
   version,
   requirement,
   statusText,
+  errorMessage,
   action,
 }: EnvironmentCheckCardProps) {
   const StatusIcon = {
@@ -94,6 +97,10 @@ export function EnvironmentCheckCard({
         </div>
 
         <p className="text-[11px] text-muted-foreground">{requirement}</p>
+
+        {errorMessage && (
+          <p className="text-[11px] text-destructive break-all">{errorMessage}</p>
+        )}
 
         {(status === 'error' || status === 'warning') && action.type !== 'none' && (
           <CardAction action={action} toolName={name} />

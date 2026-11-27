@@ -3,6 +3,11 @@ import cp from 'node:child_process'
 import * as installer from './ego-lite-installer'
 import { createHash } from 'node:crypto'
 import { createEgoLiteRun, ensureEgoLiteProfile, probeEgoLite } from './ego-lite-runtime'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { DiagnosticLog } from './diagnostic-log'
+import { installDiagnosticConsole } from '../../lib/diagnostic-console'
 
 const realSpawn = cp.spawn.bind(cp)
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j3XkAAAAASUVORK5CYII='
@@ -29,7 +34,7 @@ const profiles = () => fault==='missing' ? [{...profile, name:'Personal'}]
   : fault==='duplicate-id' ? [profile,{...profile,name:'Personal'}]
   : fault==='case-conflict' ? [profile,{...profile,id:'Profile 3',name:profile.name.toLowerCase()}]
   : [profile];
-let exists = fault !== 'new';
+let exists = fault !== 'new' && !(fault === 'closed' && ${calls} === 2);
 const entry = {id:7,name:${JSON.stringify(name)},profileId:fault==='wrong'?'Default':profile.id,ownership:fault==='takeover'?'agentDelegatedToUser':'agent'};
 const listTaskSpaces = () => {
   if (['missing','duplicate','default','default-id','duplicate-id','case-conflict'].includes(fault)) throw Error('profile must be resolved before TaskSpace lookup');
@@ -53,6 +58,50 @@ const run = () => createEgoLiteRun('workspace', 'session', () => true)
 afterEach(() => mock.restore())
 
 describe('Ego Lite v2.2.1 结构化派发', () => {
+  it('将打开、成功、关闭后不可用、停止及异常写入本地诊断，不记录页面或原始异常', async () => {
+    const dir = mkdtempSync(join(process.env.PI_SCRATCH_DIR ?? tmpdir(), 'ego-diagnostics-'))
+    const log = new DiagnosticLog(dir, { enabled: true })
+    const restore = installDiagnosticConsole(console, (level, values) => log.write('main', level, values))
+    const r = run()
+    try {
+      const cli = browser('closed')
+      expect(await r.execute({kind:'observe'})).toBe('@1 button')
+      await expect(r.execute({kind:'observe'})).rejects.toThrow('操作失败')
+      expect(cli.calls()).toBe(2)
+      r.stop()
+      r.stop()
+      const failing = run()
+      spyOn(cp, 'spawn').mockImplementation(() => { throw new Error(secret) })
+      await expect(failing.execute({kind:'fill',ref:'@1',value:secret})).rejects.toThrow('操作失败')
+      const text = readFileSync(join(dir, 'diagnostic-0.log'), 'utf8')
+      expect(text).not.toContain('@1 button')
+      expect(text).not.toContain('%PATH%')
+      expect(text).not.toContain('Profile 2')
+      expect(text).toContain('[main] [error] ["[Ego Lite] action_failed"')
+      const entries = text.trim().split(/\r?\n/).map(line => JSON.parse(line.slice(line.indexOf(' ["') + 1)) as [string, Record<string, unknown>])
+      expect(entries.map(([event]) => event.replace('[Ego Lite] ', ''))).toEqual([
+        'task_space_open_started', 'task_space_opened', 'action_succeeded', 'action_failed', 'dispatch_stopped',
+        'task_space_open_started', 'task_space_open_unconfirmed', 'action_failed', 'dispatch_stopped',
+      ])
+      const runId = entries[0]![1].runId
+      expect(entries[1]![1]).toMatchObject({ runId, spaceId: 7, mode: 'reused', profileMode: 'workspace' })
+      expect(entries[2]![1]).toMatchObject({ runId, action: 'observe', durationMs: expect.any(Number) })
+      expect(entries[3]![1]).toMatchObject({ runId, spaceId: 7, reason: 'task_space_missing' })
+      expect(entries[4]![1]).toMatchObject({ runId, reason: 'failure' })
+      expect(entries[7]![1]).toMatchObject({ reason: 'unexpected_error' })
+      expect(entries[7]![1].runId).not.toBe(runId)
+    } finally {
+      r.stop()
+      restore()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+  it('诊断输出异常不改变返回值或停止行为', async () => {
+    browser('new')
+    spyOn(console, 'info').mockImplementation(() => { throw new Error('日志不可用') })
+    const r = run()
+    try { expect(await r.execute({kind:'observe'})).toBe('@1 button') } finally { r.stop() }
+  })
   it('兼容真实 CLI 从 stderr 返回版本结果', async () => {
     browser('stderr')
     expect(await probeEgoLite()).toBe('0.5.0.5')

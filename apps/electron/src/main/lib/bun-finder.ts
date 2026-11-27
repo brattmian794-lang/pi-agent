@@ -109,11 +109,14 @@ export function getVendorBunPath(): string | null {
 }
 
 /**
- * 从系统 PATH 查找 Bun
+ * 从系统 PATH 查找所有 Bun 候选
  *
- * @returns Bun 二进制路径，如果未找到返回 null
+ * `where bun` 会按 PATH 顺序返回多行（每行以 CRLF 结尾），`which bun` 同理；
+ * 逐行规范化后返回全部真实存在的路径，交给上层逐个校验可执行性。
+ *
+ * @returns 存在于磁盘上的候选路径列表，未找到返回空数组
  */
-export function getSystemBunPath(): string | null {
+export function getSystemBunPaths(): string[] {
   try {
     // 使用 which/where 命令查找 bun
     const command = process.platform === 'win32' ? 'where bun' : 'which bun'
@@ -124,27 +127,26 @@ export function getSystemBunPath(): string | null {
       timeout: 5000,
     })
 
-    const bunPath = result.trim().split('\n')[0]
-
-    if (bunPath && existsSync(bunPath)) {
-      return bunPath
-    }
+    return result
+      .split(/\r?\n/)
+      .map((line) => line.trim().replace(/^"(.*)"$/, '$1'))
+      .filter((line) => line.length > 0 && existsSync(line))
   } catch {
     // 命令执行失败，Bun 未安装
   }
 
-  return null
+  return []
 }
 
 /**
  * 验证 Bun 可执行文件
  *
  * @param bunPath - Bun 二进制路径
- * @returns 版本号，如果无效返回 null
+ * @returns 版本号，或无法执行时的具体原因
  */
-export function validateBunExecutable(bunPath: string): string | null {
+export function validateBunExecutable(bunPath: string): { ok: true; version: string } | { ok: false; reason: string } {
   if (!existsSync(bunPath)) {
-    return null
+    return { ok: false, reason: '路径不存在或不可访问' }
   }
 
   try {
@@ -155,14 +157,17 @@ export function validateBunExecutable(bunPath: string): string | null {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
 
-    if (result.status === 0 && result.stdout) {
-      return result.stdout.trim()
+    if (result.error) {
+      return { ok: false, reason: result.error.message }
     }
-  } catch {
-    // 执行失败
+    if (result.status === 0 && result.stdout) {
+      return { ok: true, version: result.stdout.trim() }
+    }
+    const stderr = typeof result.stderr === 'string' ? result.stderr.trim() : ''
+    return { ok: false, reason: stderr || `退出码 ${String(result.status)}（可能不是可执行文件）` }
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) }
   }
-
-  return null
 }
 
 /**
@@ -181,32 +186,49 @@ export function validateBunExecutable(bunPath: string): string | null {
 export async function detectBunRuntime(): Promise<BunRuntimeStatus> {
   console.log('[Bun 检测] 开始检测 Bun 运行时（可选组件）...')
 
-  const candidates: Array<{
-    getPath: () => string | null
-    source: 'bundled' | 'system' | 'vendor'
-  }> = [
-    { getPath: getBundledBunPath, source: 'bundled' },
-    { getPath: getSystemBunPath, source: 'system' },
-    { getPath: getVendorBunPath, source: 'vendor' },
+  /** Bun 安装来源，用于把诊断日志定位到具体位置。 */
+  type BunSource = 'bundled' | 'system' | 'vendor'
+
+  const candidateSources: Array<{ list: () => string[]; source: BunSource }> = [
+    { list: () => { const bunPath = getBundledBunPath(); return bunPath ? [bunPath] : [] }, source: 'bundled' },
+    { list: getSystemBunPaths, source: 'system' },
+    { list: () => { const bunPath = getVendorBunPath(); return bunPath ? [bunPath] : [] }, source: 'vendor' },
   ]
 
-  for (const { getPath, source } of candidates) {
-    const bunPath = getPath()
-    if (!bunPath) continue
+  /** 找到但无法执行的候选，用于区分「未安装」与「安装不可用」。 */
+  const failedCandidates: Array<{ path: string; source: BunSource; reason: string }> = []
 
-    const version = validateBunExecutable(bunPath)
-    if (!version) {
-      console.warn(`[Bun 检测] ${source} 位置的 Bun 无法执行: ${bunPath}`)
-      continue
+  for (const { list, source } of candidateSources) {
+    for (const bunPath of list()) {
+      const validation = validateBunExecutable(bunPath)
+      if (!validation.ok) {
+        console.warn(`[Bun 检测] ${source} 位置的 Bun 无法执行: ${bunPath}（${validation.reason}）`)
+        failedCandidates.push({ path: bunPath, source, reason: validation.reason })
+        // PATH 里可能残留多个 bun（旧安装、包管理器副本），继续校验下一个候选。
+        continue
+      }
+
+      console.log(`[Bun 检测] 找到 Bun (${source}): ${bunPath} (${validation.version})`)
+      return {
+        available: true,
+        path: bunPath,
+        version: validation.version,
+        source,
+        error: null,
+      }
     }
+  }
 
-    console.log(`[Bun 检测] 找到 Bun (${source}): ${bunPath} (${version})`)
+  if (failedCandidates.length > 0) {
+    const detail = failedCandidates.map((item) => `${item.source}=${item.path}（${item.reason}）`).join('; ')
+    const error = `发现 ${failedCandidates.length} 个 Bun 候选但都无法执行：${detail}`
+    console.warn(`[Bun 检测] ${error}。请确认该文件可执行（权限、架构匹配）或重新安装 Bun。`)
     return {
-      available: true,
-      path: bunPath,
-      version,
-      source,
-      error: null,
+      available: false,
+      path: null,
+      version: null,
+      source: null,
+      error,
     }
   }
 

@@ -1106,7 +1106,9 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
       publishBrowserState(state)
       return state
     } catch (error) {
-      console.error('[SidePanel] 打开受管浏览器失败:', error)
+      // 首屏加载超时已在主进程降级为「标签已创建」，能走到这里的都是真正的打开失败。
+      // 侧栏保留在可重试状态：再次点击会复用同一会话，不会重复创建标签。
+      console.warn('[SidePanel] 打开受管浏览器失败，可在右侧标签栏重新点击重试（不会重复创建标签）:', error)
       return null
     } finally {
       if (openingBrowserSessionRef.current === sessionId) openingBrowserSessionRef.current = null

@@ -362,6 +362,94 @@ async function runStreamAttempt(options: StreamSSEOptions): Promise<StreamSSERes
 
 // ===== 非流式标题请求 =====
 
+/** 标题请求失败原因分类，用于区分账户额度、网络与模型侧问题。 */
+export type TitleFetchFailureKind =
+  | 'timeout'
+  | 'insufficient_balance'
+  | 'http_error'
+  | 'network'
+  | 'empty_response'
+  | 'parse_error'
+
+export interface TitleFetchResult {
+  title: string | null
+  failure: { kind: TitleFetchFailureKind; message: string } | null
+}
+
+/** 标题请求超时时长：推理模型较慢时也不能无限挂起。 */
+export const TITLE_REQUEST_TIMEOUT_MS = 30_000
+
+const INSUFFICIENT_BALANCE_PATTERN = /balance|quota|insufficient|recharge|额度|余额/i
+
+/**
+ * 执行非流式标题生成请求，并返回可诊断的失败原因。
+ *
+ * @param request 构建好的 HTTP 请求配置
+ * @param adapter 供应商适配器（用于解析响应）
+ * @returns 标题文本与失败分类（成功时 failure 为 null）
+ */
+export async function fetchTitleWithDiagnostics(
+  request: ProviderRequest,
+  adapter: ProviderAdapter,
+  fetchFn: typeof globalThis.fetch = fetch,
+): Promise<TitleFetchResult> {
+  try {
+    const response = await fetchFn(request.url, {
+      method: 'POST',
+      headers: request.headers,
+      body: request.body,
+      signal: AbortSignal.timeout(TITLE_REQUEST_TIMEOUT_MS),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => 'unknown')
+      const snippet = errorText.slice(0, 300)
+      const kind: TitleFetchFailureKind =
+        // 402 Payment Required 本身就是额度语义；其它状态码（部分网关会把上游 402/额度错误
+        // 包成 400/429/500）则以响应体里的余额关键词为准，避免把额度不足误判成模型故障。
+        response.status === 402 || INSUFFICIENT_BALANCE_PATTERN.test(errorText)
+          ? 'insufficient_balance'
+          : 'http_error'
+      const message = kind === 'insufficient_balance'
+        ? `账户额度不足（HTTP ${response.status}），请充值后重试: ${snippet}`
+        : `标题请求返回 HTTP ${response.status} ${response.statusText}: ${snippet}`
+      console.warn(`[fetchTitle] 请求失败: ${message}`, { provider: adapter.providerType })
+      return { title: null, failure: { kind, message } }
+    }
+
+    // 响应体解析失败与网络故障分开归类：HTTP 已成功返回，问题出在模型侧响应格式或解析器。
+    let data: unknown
+    let title: string | null
+    try {
+      data = await response.json()
+      title = adapter.parseTitleResponse(data)
+    } catch (parseError) {
+      const detail = parseError instanceof Error ? parseError.message : String(parseError)
+      const message = `标题响应解析失败: ${detail}`
+      console.warn(`[fetchTitle] ${message}`, { provider: adapter.providerType })
+      return { title: null, failure: { kind: 'parse_error', message } }
+    }
+    if (!title) {
+      return {
+        title: null,
+        failure: { kind: 'empty_response', message: '响应成功但未解析出标题字段' },
+      }
+    }
+    return { title, failure: null }
+  } catch (error) {
+    const timedOut = error instanceof Error
+      && (error.name === 'TimeoutError' || error.name === 'AbortError')
+    const message = timedOut
+      ? `标题请求超时（${TITLE_REQUEST_TIMEOUT_MS / 1000}s 内未返回）`
+      : `标题请求网络异常: ${error instanceof Error ? error.message : String(error)}`
+    console.warn(`[fetchTitle] ${message}`, { provider: adapter.providerType })
+    return {
+      title: null,
+      failure: { kind: timedOut ? 'timeout' : 'network', message },
+    }
+  }
+}
+
 /**
  * 执行非流式标题生成请求
  *
@@ -374,49 +462,6 @@ export async function fetchTitle(
   adapter: ProviderAdapter,
   fetchFn: typeof globalThis.fetch = fetch,
 ): Promise<string | null> {
-  // 标题请求必须有时限：推理模型响应可能较慢，若无限挂起，
-  // 会话会一直停在默认标题（fallback 也不会执行）。
-  const TITLE_REQUEST_TIMEOUT_MS = 30_000
-  try {
-    console.log('[fetchTitle] 发送请求:', {
-      url: request.url,
-      provider: adapter.providerType,
-      bodyPreview: request.body.slice(0, 200),
-    })
-
-    const response = await fetchFn(request.url, {
-      method: 'POST',
-      headers: request.headers,
-      body: request.body,
-      signal: AbortSignal.timeout(TITLE_REQUEST_TIMEOUT_MS),
-    })
-
-    console.log('[fetchTitle] 收到响应:', {
-      status: response.status,
-      statusText: response.statusText,
-      ok: response.ok,
-    })
-
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'unknown')
-      console.warn('[fetchTitle] 请求失败:', {
-        status: response.status,
-        error: errorText.slice(0, 500),
-      })
-      return null
-    }
-
-    const data: unknown = await response.json()
-    console.log('[fetchTitle] 解析响应体:', {
-      provider: adapter.providerType,
-      dataPreview: JSON.stringify(data).slice(0, 500),
-    })
-
-    const title = adapter.parseTitleResponse(data)
-    console.log('[fetchTitle] 解析标题结果:', { title })
-    return title
-  } catch (error) {
-    console.error('[fetchTitle] 异常:', error)
-    return null
-  }
+  const result = await fetchTitleWithDiagnostics(request, adapter, fetchFn)
+  return result.title
 }

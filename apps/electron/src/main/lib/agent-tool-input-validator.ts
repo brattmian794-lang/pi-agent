@@ -22,6 +22,8 @@ export const TOOL_REQUIRED_PARAMS: ReadonlyMap<string, ReadonlyArray<string>> = 
 export interface ToolValidationFailure {
   behavior: 'deny'
   message: string
+  /** 缺失的必需参数名（仅字段名，便于日志定位且不会记录内容）。 */
+  missingParams: string[]
 }
 
 /**
@@ -52,5 +54,5 @@ export function validateToolInput(
     ? `Tool "${toolName}" is missing required parameter ${paramList}. Please retry with all required parameters filled in.`
     : `Tool "${toolName}" is missing required parameters: ${paramList}. Please retry with all required parameters filled in.`
 
-  return { behavior: 'deny' as const, message }
+  return { behavior: 'deny' as const, message, missingParams: missing }
 }

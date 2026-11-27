@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { installDiagnosticConsole, serializeDiagnosticValues } from './diagnostic-console'
+import { installDiagnosticConsole, refineTransportLog, scrubCredentialFragments, serializeDiagnosticValues } from './diagnostic-console'
 
 describe('诊断 Console 采集', () => {
   test('Given 原始 Console When 采集四种级别 Then 保留原输出并传递 Error 对象', () => {
@@ -41,5 +41,32 @@ describe('诊断 Console 采集', () => {
     const large = serializeDiagnosticValues(['字'.repeat(50000), '尾部'])
     expect(large.join('').length).toBeLessThanOrEqual(16384)
     expect(serializeDiagnosticValues([1n, undefined])).toEqual(['"1"', 'undefined'])
+  })
+})
+
+describe('传输层超时日志分级', () => {
+  test('Given WS 通道用普通级别输出 15 秒超时 When 写入诊断日志 Then 提升为告警并补齐超时与重连状态', () => {
+    const refined = refineTransportLog('log', ['[ws]', 'timeout of 15000ms exceeded'])
+    expect(refined.level).toBe('warn')
+    const text = refined.values.join(' ')
+    expect(text).toContain('[传输层]')
+    expect(text).toContain('15000ms')
+    expect(text).toContain('结果未知')
+    expect(text).toContain('重连')
+  })
+
+  test('Given 已是告警或与传输无关的普通日志 When 分级 Then 保持原级别与内容', () => {
+    expect(refineTransportLog('warn', ['[ws]', 'timeout of 15000ms exceeded']).level).toBe('warn')
+    const unrelated = refineTransportLog('log', ['[Agent] 普通进度'])
+    expect(unrelated.level).toBe('log')
+    expect(unrelated.values).toEqual(['[Agent] 普通进度'])
+  })
+
+  test('Given 日志含 key/token 与 Authorization When 脱敏 Then 仅保留参数名', () => {
+    const scrubbed = scrubCredentialFragments('wss://host/ws?api_key=sk-secret&token=abc Bearer eyJhbGciOi.xx')
+    expect(scrubbed).not.toContain('sk-secret')
+    expect(scrubbed).not.toContain('abc')
+    expect(scrubbed).not.toContain('eyJhbGciOi')
+    expect(scrubbed).toContain('api_key=[已隐藏]')
   })
 })
