@@ -41,10 +41,11 @@ describe('打包配置与更新器策略一致', () => {
     expect(files).toContain('!dist/resources/**')
     expect(files).toContain('dist/resources/icon.png')
 
-    // 打包后的窗口图标必须落在 process.resourcesPath 根目录，否则 getIconPath 找不到。
+    // 打包后的 Windows 窗口图标必须落在 process.resourcesPath 根目录，否则 getIconPath 找不到。
     expect(publishesToResourceRoot('resources/icon.ico')).toBe(true)
-    expect(publishesToResourceRoot('resources/icon.icns')).toBe(true)
     expect(publishesToResourceRoot('resources/icon.png')).toBe(true)
+    // macOS 的 icon.icns 由 mac.icon 生成到 .app/Contents/Resources，再声明一次会让打包报 EEXIST。
+    expect(publishesToResourceRoot('resources/icon.icns')).toBe(false)
 
     for (const source of ['resources/icon.ico', 'resources/icon.icns', 'resources/icon.png']) {
       expect(existsSync(join(appDir, source))).toBe(true)
